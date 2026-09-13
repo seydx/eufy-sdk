@@ -82,6 +82,22 @@ describe("LiveStream", () => {
     expect(audio[0].data.equals(payload)).toBe(true);
   });
 
+  it("carries the station's capture timestamps on video and audio, from one clock", () => {
+    const { session, live } = mk();
+    const video: any[] = [];
+    const audio: any[] = [];
+    live.on("video", (f) => video.push(f));
+    live.on("audio", (f) => audio.push(f));
+    live.start();
+
+    session.push(p2pVideoFrame({ keyframe: true, nal: Buffer.from([0x67, 1]), timestamp: 488_643_540 }));
+    session.push(p2pAudioFrame(0, Buffer.from([1, 2]), 0, 488_643_594) as any);
+    session.push(p2pVideoFrame({ keyframe: false, nal: Buffer.from([0x41, 1]), timestamp: 488_643_606 }));
+
+    expect(video.map((f) => f.timestamp)).toEqual([488_643_540, 488_643_606]);
+    expect(audio.map((f) => f.timestamp)).toEqual([488_643_594]);
+  });
+
   it("maps each codec id the app accepts, and re-reads it on every frame", () => {
     const { session, live } = mk();
     const audio: any[] = [];

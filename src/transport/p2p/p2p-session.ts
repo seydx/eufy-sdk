@@ -190,6 +190,18 @@ const SEQUENCE_LOOKBACK = 0x8000;
  */
 const STALE_RETRANSMIT_DEPTH = 1024;
 /**
+ * How long datagrams that arrived ahead of a missing one are held for the device to repeat the missing one.
+ *
+ * The device repeats a datagram until it is acknowledged, so a hole in the numbering is normally filled
+ * later. Measured on an own-session camera streaming over Wi-Fi for 180 s: 906 holes, every one filled,
+ * open for 29 ms at the median, 289 ms at the 90th percentile and 1701 ms at the longest. Discarding the
+ * frame at a hole instead costs whole keyframes and leaves the picture frozen until the next one. Past this
+ * window the hole is taken as lost and reassembly resumes from the datagrams held behind it.
+ */
+const REORDER_WAIT_MS = 5000;
+/** Datagrams held per data type behind a missing one. Past this the hole is skipped rather than waited for. */
+const REORDER_HOLD_LIMIT = 2048;
+/**
  * Datagram gaps traced per live start. A lossy channel can drop hundreds of datagrams in one start, and the
  * first few establish the pattern; the rest would only flood a host's log, so the trace stops there while
  * reassembly carries on unchanged.
@@ -358,6 +370,11 @@ export class P2PSession extends EventEmitter {
   /** Last datagram sequence number seen per dataType — used to detect a lost/reordered datagram
    * mid-frame and drop the (now unrecoverable) partial frame instead of splicing wrong bytes. */
   private readonly lastSeqByType = new Map<number, number>();
+  /** Datagrams that arrived ahead of a missing one, per dataType, with the wait for the missing one. */
+  private readonly heldByDataType = new Map<
+    number,
+    { datagrams: Map<number, Buffer>; timer?: ReturnType<typeof setTimeout> }
+  >();
   private tracedDatagramGaps = 0;
   private readonly level1Key: Buffer;
   /** Negotiated 32-byte level-2/gateway key (AES-256-GCM). Set via setLevel2Key once known. */
@@ -822,9 +839,30 @@ export class P2PSession extends EventEmitter {
       this.onAck(msg);
     } else if (hasHeader(msg, ResponseMessageType.DATA)) {
       if (this.connected) this.onData(msg, { host: rinfo.address, port: rinfo.port });
+    } else if (hasHeader(msg, ResponseMessageType.END)) {
+      this.onPeerEnd({ host: rinfo.address, port: rinfo.port });
     } else {
       this.logger.debug(`[p2p] ${this.cfg.stationSn} UNHANDLED payload hex: ${msg.toString("hex")}`);
     }
+  }
+
+  /**
+   * The station ended the connection with `END` (`0xf1f0`) from the address the session is connected to.
+   *
+   * Nothing arrives on that connection afterwards: measured on an own-session camera streaming for about a
+   * minute, the station sent `END`, video stopped, and every media start sent on the same session went
+   * unacknowledged while the session kept answering pings. Closing here emits `close`, which drops what rides
+   * the session, so the next acquisition builds a fresh one instead of re-attaching to a dead stream.
+   *
+   * No `END` is sent back, because the station has already left. An `END` from any other address, or before
+   * the handshake completed, says nothing about this connection and is ignored.
+   */
+  private onPeerEnd(from: Address): void {
+    const addr = this.connectAddress;
+    if (!this.connected || !addr || addr.host !== from.host || addr.port !== from.port) return;
+    this.logger.info(`[p2p] ${this.cfg.stationSn} station ended the session`);
+    this.connectAddress = undefined;
+    void this.close();
   }
 
   private beginCheckCam(addr: Address): void {
@@ -1652,9 +1690,12 @@ export class P2PSession extends EventEmitter {
    * numbering and the half-assembled frame goes — because ignoring it would freeze the mark, and every
    * datagram of the new numbering would then be read as behind it too, for as long as it took to climb back.
    *
-   * Only a forward gap means a datagram is genuinely missing. A logical frame's payload spans datagrams that
-   * carry no header of their own, so the bytes cannot be reassembled around the hole: whatever was pending
-   * for that data type is discarded, and the frame is rebuilt from the next header.
+   * A datagram numbered ahead of the next expected one is held rather than reassembled, because the missing
+   * one is normally repeated a moment later: once it arrives, it and everything held behind it are reassembled
+   * in order. Only a hole that stays open for {@link REORDER_WAIT_MS}, or one with more than
+   * {@link REORDER_HOLD_LIMIT} datagrams held behind it, is a datagram genuinely missing. A logical frame's
+   * payload spans datagrams that carry no header of their own, so the bytes cannot be reassembled around that
+   * hole: whatever was pending for that data type is discarded, and the frame is rebuilt from the next header.
    */
   private onData(msg: Buffer, addr: Address): void {
     const dataTypeBuffer = msg.subarray(4, 6);
@@ -1667,10 +1708,30 @@ export class P2PSession extends EventEmitter {
     if (advance === 0) return;
     const restarted = advance > SEQUENCE_LOOKBACK && 0x10000 - advance > STALE_RETRANSMIT_DEPTH;
     if (advance > SEQUENCE_LOOKBACK && !restarted) return;
+    if (restarted) {
+      this.releaseHeld(dataType);
+      this.reassemble(dataType, seqNo, msg, "sequence-restart");
+      return;
+    }
+    if (advance === 1) {
+      this.reassemble(dataType, seqNo, msg);
+      this.drainHeld(dataType);
+      return;
+    }
+    this.hold(dataType, seqNo, msg);
+  }
+
+  /** Reassemble one datagram that is next in its data type's numbering, or that resumes it after a hole. */
+  private reassemble(
+    dataType: number,
+    seqNo: number,
+    msg: Buffer,
+    resumed?: "datagram-gap" | "sequence-restart",
+  ): void {
     this.lastSeqByType.set(dataType, seqNo);
-    if ((advance > 1 || restarted) && this.pendingByDataType.has(dataType)) {
+    if (resumed && this.pendingByDataType.has(dataType)) {
       if (this.tracedDatagramGaps++ < MAX_TRACED_DATAGRAM_GAPS) {
-        this.trace({ phase: restarted ? "sequence-restart" : "datagram-gap", dataType });
+        this.trace({ phase: resumed, dataType });
       }
       this.pendingByDataType.delete(dataType);
     }
@@ -1681,7 +1742,6 @@ export class P2PSession extends EventEmitter {
     this.pendingByDataType.delete(dataType);
 
     if (carryHeader) {
-      // continuing a frame: we have header already; body is the accumulated payload
       if (body.length < carryHeader.bytesToRead) {
         this.pendingByDataType.set(dataType, { header: carryHeader, buf: body });
         return;
@@ -1694,13 +1754,82 @@ export class P2PSession extends EventEmitter {
       const header = parseDataFrameHeader(body);
       const payload = body.subarray(P2P_DATA_HEADER_BYTES);
       if (payload.length < header.bytesToRead) {
-        // frame spans into following datagram(s) — stash and wait
         this.pendingByDataType.set(dataType, { header, buf: payload });
         return;
       }
       this.handleFrame(header, payload.subarray(0, header.bytesToRead), dataType);
       body = body.subarray(P2P_DATA_HEADER_BYTES + header.bytesToRead);
     }
+  }
+
+  /** Hold a datagram that arrived ahead of a missing one, and bound how long the hole may stay open. */
+  private hold(dataType: number, seqNo: number, msg: Buffer): void {
+    let held = this.heldByDataType.get(dataType);
+    if (!held) {
+      held = { datagrams: new Map() };
+      this.heldByDataType.set(dataType, held);
+    }
+    held.datagrams.set(seqNo, msg);
+    if (held.datagrams.size > REORDER_HOLD_LIMIT) {
+      this.skipHole(dataType);
+      return;
+    }
+    held.timer ??= this.armHoleTimer(dataType);
+  }
+
+  /** Reassemble the held datagrams that now follow on without a hole, and re-arm the wait for the next hole. */
+  private drainHeld(dataType: number): void {
+    const held = this.heldByDataType.get(dataType);
+    if (!held) return;
+    let next = ((this.lastSeqByType.get(dataType) ?? 0) + 1) & 0xffff;
+    let advanced = false;
+    for (let msg = held.datagrams.get(next); msg; msg = held.datagrams.get(next)) {
+      held.datagrams.delete(next);
+      this.reassemble(dataType, next, msg);
+      next = (next + 1) & 0xffff;
+      advanced = true;
+    }
+    if (held.datagrams.size === 0) {
+      this.releaseHeld(dataType);
+    } else if (advanced) {
+      clearTimeout(held.timer);
+      held.timer = this.armHoleTimer(dataType);
+    }
+  }
+
+  /** Give up on the hole: resume from the earliest held datagram and reassemble what follows it. */
+  private skipHole(dataType: number): void {
+    const held = this.heldByDataType.get(dataType);
+    if (!held || held.datagrams.size === 0) return;
+    const last = this.lastSeqByType.get(dataType) ?? 0;
+    let earliest: number | undefined;
+    for (const seqNo of held.datagrams.keys()) {
+      if (earliest === undefined || ((seqNo - last) & 0xffff) < ((earliest - last) & 0xffff)) earliest = seqNo;
+    }
+    const msg = held.datagrams.get(earliest!)!;
+    held.datagrams.delete(earliest!);
+    clearTimeout(held.timer);
+    held.timer = undefined;
+    this.reassemble(dataType, earliest!, msg, "datagram-gap");
+    this.drainHeld(dataType);
+  }
+
+  private armHoleTimer(dataType: number): ReturnType<typeof setTimeout> {
+    const timer = setTimeout(() => {
+      const held = this.heldByDataType.get(dataType);
+      if (held) held.timer = undefined;
+      this.skipHole(dataType);
+    }, REORDER_WAIT_MS);
+    timer.unref?.();
+    return timer;
+  }
+
+  /** Drop what is held for a data type, together with its wait. */
+  private releaseHeld(dataType: number): void {
+    const held = this.heldByDataType.get(dataType);
+    if (!held) return;
+    clearTimeout(held.timer);
+    this.heldByDataType.delete(dataType);
   }
 
   /**
@@ -1712,6 +1841,7 @@ export class P2PSession extends EventEmitter {
    * completed either.
    */
   private resetInboundSequencing(): void {
+    for (const dataType of [...this.heldByDataType.keys()]) this.releaseHeld(dataType);
     this.lastSeqByType.clear();
     this.pendingByDataType.clear();
     this.tracedDatagramGaps = 0;

@@ -277,9 +277,11 @@ export function p2pVideoFrame(opts: {
   width?: number;
   height?: number;
   channel?: number;
+  timestamp?: number;
 }): Partial<P2PFrame> {
   const header = Buffer.alloc(VIDEO_HEADER_LEN);
   header.writeUInt8(opts.keyframe ? 0x01 : 0x00, 0x04);
+  header.writeUInt32LE(opts.timestamp ?? 0, 0x0e);
   header.writeInt16LE(opts.width ?? 960, 0x0a);
   header.writeInt16LE(opts.height ?? 540, 0x0c);
   const body = Buffer.concat([START_CODE, opts.nal]);
@@ -288,10 +290,11 @@ export function p2pVideoFrame(opts: {
 }
 
 /** A `CMD_AUDIO_FRAME` (1301): the 16-byte header carrying the codec id at 0x05, then the payload. */
-export function p2pAudioFrame(audioType: number, payload: Buffer, channel = 0): Partial<P2PFrame> {
+export function p2pAudioFrame(audioType: number, payload: Buffer, channel = 0, timestamp = 0): Partial<P2PFrame> {
   const header = Buffer.alloc(AUDIO_HEADER_LEN);
   header.writeUInt32LE(payload.length, 0x00);
   header.writeUInt8(audioType, 0x05);
+  header.writeUInt32LE(timestamp, 0x08);
   return { commandId: 1301, channel, signCode: 0, data: Buffer.concat([header, payload]) };
 }
 
