@@ -26,6 +26,7 @@ const EXPECTED_ACCESSORS = [
   "camera",
   "co",
   "contact",
+  "display",
   "doorbell",
   "suction",
   "info",

@@ -21,7 +21,9 @@ export type LogLevel = "debug" | "info" | "warn" | "error";
  * ```ts
  * // A custom sink (or pass a tslog / winston instance directly — they already match this shape):
  * const eufy = new EufyMega({
- *   logger: { debug: (m, ...a) => log.debug(m, ...a), info: () => {}, warn: console.warn, error: console.error },
+ *   email,
+ *   password,
+ *   logger: { debug: (m, ...a) => myLog.debug(m, ...a), info: () => {}, warn: console.warn, error: console.error },
  * });
  * ```
  */
@@ -49,8 +51,8 @@ const LEVEL_RANK: Record<LogLevel, number> = { debug: 0, info: 1, warn: 2, error
  *
  * @example
  * ```ts
- * const eufy = new EufyMega({ logger: new ConsoleLogger() });        // verbose
- * const quiet = new EufyMega({ logger: new ConsoleLogger("warn") }); // warn + error only
+ * const eufy = new EufyMega({ email, password, logger: new ConsoleLogger() });        // verbose
+ * const quiet = new EufyMega({ email, password, logger: new ConsoleLogger("warn") }); // warn + error only
  * ```
  */
 export class ConsoleLogger implements Logger {

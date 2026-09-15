@@ -89,6 +89,7 @@ import { VACUUM_CLEAN } from "./vacuum-clean.js";
 import { VACUUM_DOCK } from "./vacuum-dock.js";
 import { SUCTION } from "./suction.js";
 export { type DpCatalog, EMPTY_DP_CATALOG } from "./dp-catalog.js";
+import { DISPLAY } from "./display.js";
 import { LOCATE } from "./locate.js";
 import { INFO } from "./info.js";
 
@@ -113,6 +114,7 @@ import type { KeypadActions } from "./keypad.js";
 import type { RtspActions } from "./rtsp.js";
 import type { VacuumCleanActions } from "./vacuum-clean.js";
 import type { VacuumDockActions } from "./vacuum-dock.js";
+import type { DisplayActions } from "./display.js";
 import type { SuctionActions } from "./suction.js";
 import type { LocateActions } from "./locate.js";
 import type { DeviceInfo } from "./info.js";
@@ -144,6 +146,7 @@ const MODULES: CapabilityModule[] = [
   VACUUM_DOCK,
   SUCTION,
   LOCATE,
+  DISPLAY,
   INFO,
 ];
 
@@ -165,6 +168,24 @@ export const CAPABILITY_MODULES = Object.fromEntries(MODULES.map((m) => [m.capab
   Capability,
   CapabilityModule
 >;
+
+/**
+ * Every param these capabilities declare before any gate — the set a device's schema is a subset of.
+ *
+ * A param in here that a device's schema does NOT carry is one a gate withheld: the capability resolved,
+ * and its member decided the read does not describe this device — a cell reading on a mains model, a mode
+ * a family does not carry. Read-aliases count, since a member reads them under its own name.
+ * @internal
+ */
+export function claimedParams(caps: Capability[]): Set<number> {
+  const claimed = new Set<number>();
+  for (const cap of caps)
+    for (const spec of getCapabilityModule(cap)?.properties ?? []) {
+      claimed.add(spec.paramType);
+      for (const alias of spec.readAliases ?? []) claimed.add(alias.paramType);
+    }
+  return claimed;
+}
 
 /**
  * Merge the property schemas of several capabilities into one flat, de-duplicated list.
@@ -216,8 +237,8 @@ function hintHaystack(rec: CloudRecord): string {
  * {@link detectCapabilities}. Exhaustive over {@link Codec} on purpose: a new codec must state its
  * line rather than silently defaulting into the security ecosystem.
  *
- * `display` is grouped into `security` by maintainer decision, not wire evidence — see
- * {@link namespaceForCodec} for what that actually opens up.
+ * `display` is its own line, not a corner of `security` — see {@link ProductLine} for why one
+ * capability still earns one, and `param-namespace.ts` for the matching split of the id space.
  */
 const CODEC_LINE: Record<Codec, ProductLine> = {
   station: "security",
@@ -229,7 +250,7 @@ const CODEC_LINE: Record<Codec, ProductLine> = {
   mower: "clean",
   light: "life",
   printer: "print",
-  display: "security",
+  display: "display",
 };
 
 /**
@@ -240,9 +261,9 @@ const CODEC_LINE: Record<Codec, ProductLine> = {
  * ecosystems ("Outdoor Spotlights" is a smart light, not a camera spotlight), so without this a
  * name match hands a device a capability whose wire it cannot speak.
  */
-function lineAllows(module: CapabilityModule, codec: Codec): boolean {
+function lineAllows(module: CapabilityModule, codec: Codec | undefined): boolean {
   const line = module.line ?? "security";
-  return line === "any" || line === CODEC_LINE[codec];
+  return line === "any" || (codec !== undefined && line === CODEC_LINE[codec]);
 }
 
 /**
@@ -254,10 +275,12 @@ function lineAllows(module: CapabilityModule, codec: Codec): boolean {
  *  - a `modelHints` regex matches the model/category/name haystack,
  *  - `codecs` includes `codec`,
  *  - `detect(rec, codec)` returns true.
- * Never throws. Returns a de-duplicated array.
+ *
+ * An absent `codec` belongs to no line, so only the line-agnostic capabilities can match — the truthful
+ * answer for a device outside the eufy families entirely. Never throws. Returns a de-duplicated array.
  * @internal
  */
-export function detectCapabilities(rec: CloudRecord, codec: Codec): Capability[] {
+export function detectCapabilities(rec: CloudRecord, codec?: Codec): Capability[] {
   const found = new Set<Capability>();
 
   // Set of reported param_type ids (keys arrive as strings on rec.params).
@@ -287,10 +310,10 @@ export function detectCapabilities(rec: CloudRecord, codec: Codec): Capability[]
     if (!matched && d.modelHints && haystack.length > 0) {
       matched = d.modelHints.some((re) => re.test(haystack));
     }
-    if (!matched && d.codecs) {
+    if (!matched && d.codecs && codec !== undefined) {
       matched = d.codecs.includes(codec);
     }
-    if (!matched && d.detect) {
+    if (!matched && d.detect && codec !== undefined) {
       try {
         matched = d.detect(rec, codec) === true;
       } catch {
@@ -783,6 +806,8 @@ export interface DeviceActionMap {
   suction: SuctionActions;
   /** RoboVac locate (find-robot beep): `locating`; `locate(on?)`. */
   locate: LocateActions;
+  /** Smart Display (read-only): `battery`. No display write is captured. */
+  display: DisplayActions;
   /** Identity metadata (read-only): `{ manufacturer, model, serialNumber, name, deviceType?, firmwareVersion?, hardwareVersion? }`. */
   info: DeviceInfo;
 }
@@ -1032,6 +1057,7 @@ export { RTSP_MEMBERS } from "./rtsp.js";
 export { SIREN_MEMBERS } from "./siren.js";
 export { SMART_LIGHT_MEMBERS } from "./smart-light.js";
 export { SMOKE_MEMBERS } from "./smoke.js";
+export { DISPLAY_MEMBERS, type DisplayActions } from "./display.js";
 export { SUCTION_MEMBERS } from "./suction.js";
 export { VACUUM_CLEAN_MEMBERS } from "./vacuum-clean.js";
 // The read-only identity metadata object returned by `dev.info()` — a public consumer type.
@@ -1056,7 +1082,14 @@ export { HubAlarmTone, type HubAlarmToneValue } from "./siren.js";
  * RoboVac activity and clean type are the declared returns of the public `dev.vacuumClean()` getters,
  * so both unions are published.
  */
-export type { VacuumActivity, VacuumCleanType, CarpetStrategy, CleanExtent } from "./vacuum-clean.js";
+export type {
+  VacuumActivity,
+  VacuumCleanType,
+  CarpetStrategy,
+  CleanExtent,
+  VacuumRoomTarget,
+  VacuumZoneTarget,
+} from "./vacuum-clean.js";
 /** The lists those unions are taken from — published because each union names its own. */
 export { VACUUM_ACTIVITIES, VACUUM_CLEAN_TYPES, CARPET_STRATEGIES, CLEAN_EXTENTS, MOP_LEVELS } from "./vacuum-clean.js";
 // RoboVac suction levels — a host reads `suction` as a raw int and names it via suctionLevelName; the

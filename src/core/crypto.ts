@@ -48,6 +48,15 @@ export const EUFY_MEGA_LOCAL_KEY_HEX = "2500a7d5617812f9d52515b2c8f20a3d";
 export const EUFYLIFE_LOCAL_KEY_HEX = "118c12c81e211149304bd70a0c071d01";
 
 /**
+ * The **Anker Solix** passport localKey — the AES-128 bootstrap key for the `anker_power` app-line
+ * (power stations / smart meter). Solix runs the SAME `algo_ecdh` passport as the eufy_mega stack,
+ * re-skinned under a different `app-name` + API host, so the login key-exchange wraps the ephemeral
+ * client public key with this key; distinct from {@link EUFY_MEGA_LOCAL_KEY_HEX}. Authenticated Solix
+ * reads carry only the token + `gtoken` (no per-request encryption).
+ */
+export const SOLIX_LOCAL_KEY_HEX = "e8ad18f61bbd3fbd52d5ed12d14d3b9c";
+
+/**
  * Hardcoded server P-256 public key (uncompressed 0x04||X||Y) used to encrypt
  * the LOGIN password via a one-shot ECDH (separate from the per-session key).
  */
@@ -66,9 +75,14 @@ export function nowSec(): string {
   return Math.floor(Date.now() / 1000).toString();
 }
 
+/** md5 hex digest — the one place this derivation lives (gtoken, openudid seeds, …). */
+export function md5Hex(input: string): string {
+  return createHash("md5").update(input, "utf-8").digest("hex");
+}
+
 /** gtoken header = md5(user_id) hex. */
 export function gtoken(userId: string): string {
-  return createHash("md5").update(userId, "utf-8").digest("hex");
+  return md5Hex(userId);
 }
 
 /* ---- (B) body encryption + (C) signing — VERIFIED ----------------- */

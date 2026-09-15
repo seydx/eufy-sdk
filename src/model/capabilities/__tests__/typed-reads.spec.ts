@@ -26,7 +26,7 @@ describe("typed capability reads", () => {
   it("battery exposes level/charging narrowed to their declared types", () => {
     const rec = {
       deviceType: 0,
-      model: "T8410",
+      model: "T8114",
       category: "eufy_security",
       params: { [paramOf(BATTERY, "battery")]: "55", [paramOf(BATTERY, "charging")]: "4" },
     };
@@ -44,7 +44,7 @@ describe("typed capability reads", () => {
   it("evidence-gates a getter: absent when the device didn't report the backing param", () => {
     const rec = {
       deviceType: 0,
-      model: "T8410",
+      model: "T8114",
       category: "eufy_security",
       params: { [paramOf(BATTERY, "battery")]: "80" },
     };
@@ -61,7 +61,7 @@ describe("typed capability reads", () => {
   it("reflects live updates (getters read through the device's live state)", () => {
     const rec = {
       deviceType: 0,
-      model: "T8410",
+      model: "T8114",
       category: "eufy_security",
       params: { [paramOf(BATTERY, "battery")]: "40" },
     };
@@ -167,7 +167,7 @@ describe("typed capability reads", () => {
   it("read getters are bound-only (undefined on an unbound model)", () => {
     const rec = {
       deviceType: 0,
-      model: "T8410",
+      model: "T8114",
       category: "eufy_security",
       params: { [paramOf(BATTERY, "battery")]: "50" },
     };

@@ -14,5 +14,5 @@ export * from "./core/index.js";
 // Device connectivity — internal wire, surfaced for advanced/escape-hatch use.
 export * from "./transport/index.js";
 
-// Device model: capability-driven Device + capability modules.
+// Device model: capability-driven Device + capability modules (incl. the Anker Solix device model).
 export * from "./model/index.js";

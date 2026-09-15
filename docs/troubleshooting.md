@@ -13,9 +13,9 @@ MQTT, P2P, push, live media), each line prefixed by subsystem (`[mega]` / `[smqt
 ```ts
 import { EufyMega, ConsoleLogger } from "@mega-yfue/eufy-sdk";
 
-const eufy = new EufyMega({ email, password, region: "eu", logger: new ConsoleLogger() });
+const eufy = new EufyMega({ email, password, region: "eu-pr", logger: new ConsoleLogger() });
 // or gate by severity — warnings and errors only:
-const quiet = new EufyMega({ email, password, region: "eu", logger: new ConsoleLogger("warn") });
+const quiet = new EufyMega({ email, password, region: "eu-pr", logger: new ConsoleLogger("warn") });
 ```
 
 Any logger with `debug` / `info` / `warn` / `error` methods works too (tslog and winston fit
@@ -34,7 +34,7 @@ eufy.on("error", (err) => console.error("[eufy]", err));
 Media streams have their own `error` (including a start stall — see below) and a `stop`:
 
 ```ts
-const stream = await cam?.live();
+const stream = await cam?.live?.();
 stream?.on("error", (err) => console.error("stream", err));
 stream?.on("stop", () => console.log("source ended — re-attach to rebuild"));
 ```
@@ -85,6 +85,8 @@ eufy.on("sessionExpired", async () => {
 
   A host that bounds or redacts what it retains should key its phase allowlist off the union, so a phase
   added here fails to compile rather than being discarded:
+
+  <!-- typecheck: skip — the tail of a larger expression, shown alone to make the `satisfies` clause the point -->
 
   ```ts
   } satisfies Record<LiveTrace["phase"], true>;

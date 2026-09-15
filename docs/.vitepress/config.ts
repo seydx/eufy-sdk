@@ -84,6 +84,7 @@ export default defineConfig({
             { text: "Pan-tilt-zoom (PTZ)", link: "/ptz" },
             { text: "Smart lights", link: "/smart-lights" },
             { text: "Vacuums & mowers", link: "/vacuums" },
+            { text: "Smart Display", link: "/smart-display" },
           ],
         },
         {

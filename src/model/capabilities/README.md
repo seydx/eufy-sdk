@@ -280,10 +280,11 @@ when the key would collide there (`battery`'s `level` → property `battery`, si
 - `min`/`max`/`enumValues`/`decodedValues` are the PUBLISHED domain, enforced once in `memberWrite` for
   both entry points and named in the generated rejection message, so it cannot go stale as the set grows.
 - **A write domain narrower than the read's** is stated as the first `args` entry's `values`, which then
-  becomes the set the check, the rejection message and the offered control all use. `arming` is the case:
-  a station REPORTS nine guard modes (all nine are `enumValues`, so a reported one has a name) and can be
-  SET to the three whose write was captured. Reach for this only for that asymmetry — a member whose two
-  sides agree declares `enumValues` alone and the argument derives from it.
+  becomes the set the check, the rejection message and the offered control all use. Reach for it only for
+  that asymmetry — a device that REPORTS a value it will not accept back — and only while the asymmetry
+  lasts: a member whose two sides agree declares `enumValues` alone and the argument derives from it.
+  No member states one today. `arming` was the last and is the shape to recognise: a station reports nine
+  guard modes and, until each write was confirmed against real hardware, accepted only some of them.
 - `aliases` route extra intent verbs to the same write with the value each stands for; `intentNames`
   route a second property name to it;
   `accepts<T>()` widens the setter past what the getter answers (a resolution NAME for a tier stored as

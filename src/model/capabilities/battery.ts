@@ -121,29 +121,105 @@ function recordSetting(param: number, value: number, ctx: CommandContext): Comma
 }
 
 /**
- * Camera models that are MAINS-powered yet still report the battery param (1101) as a fixed sentinel
- * (e.g. 0 or 100), not a real cell. They keep the `battery` capability (for working-mode/recording),
- * but the PHYSICAL-battery reads (`level`, `charging`) are withheld via {@link notMainsCamera} so they
- * don't sprout a bogus battery %/icon.
+ * Camera models that are MAINS-powered yet still report the battery params as fixed sentinels, not a
+ * real cell. They keep the `battery` capability — it owns the working-mode and recording settings,
+ * which a mains camera genuinely has — but every read that describes a PHYSICAL CELL is withheld via
+ * {@link notMainsCamera}, so they don't sprout a bogus battery %, a cell temperature, a state of
+ * health or a solar harvest.
+ *
+ * Which reads those are is {@link CELL_PARAMS}, and {@link cellGated} applies this from it. The settings
+ * beside them are deliberately NOT gated, and that split is the whole reason the capability stays
+ * attached.
+ *
+ * **It FAILS OPEN.** A record carrying no `model` matches no prefix, so every cell read is published —
+ * the same shape as any model this list does not name. That is the safer direction of the two (a real
+ * battery camera never silently loses its charge) and it is why the list can only ever be a floor: a
+ * device whose record is thin still shows the sentinels. A spec pins it so the behaviour is chosen
+ * rather than inherited.
+ *
+ * It is also a STATIC fact about a model, not a live reading of what is powering the device. Nothing
+ * here handles a unit whose supply can change — a camera moved onto a battery base, say. Moot for these
+ * three, which have no cell to charge, and stated because the shape of the guard does not say so.
  *
  * An explicit list, NOT a `device-family.ts` predicate (`isFloodLight`/`isIndoorCamera`): composing
  * those would over-reach — not every floodlight or indoor cam is mains-only, and this must assert mains
  * only for hardware actually checked. `WORKING_MODE_DEFAULT_MODELS` in this file is the same shape.
  * Evidence bars differ: T8425 (Floodlight Cam) is confirmed on owned hardware; T8419 (Indoor Cam) is
- * taken from the app's own mains-cam handling (see the note on `publishedWorkingModeDomain`).
+ * taken from the app's own mains-cam handling (see the note on `publishedWorkingModeDomain`); T8410
+ * (Indoor Cam Pan & Tilt) is confirmed mains-only by the maintainer, reported after a live unit showed
+ * a battery level, a cell temperature and both solar reads it cannot have.
  *
  * KNOWN, ACCEPTED trade: because the capability stays, `poweredOf` (camera.ts) still resolves these as
  * `battery`, so a live stream is budgeted as if cell-powered. An unnecessary power budget is cheap; a
  * phantom battery icon is a support ticket — so the visible entity is fixed here and the budget is
  * left as-is (a `poweredOf` refinement would be a separate change).
  */
-const MAINS_CAMERA_MODELS = ["T8425", "T8419"] as const;
+const MAINS_CAMERA_MODELS = ["T8425", "T8419", "T8410"] as const;
 
-/** False for a mains camera that only reports 1101 as a sentinel — used to gate the physical reads. */
+/** False for a mains camera whose battery params are sentinels — gates every physical-cell read. */
 const notMainsCamera = (ctx: AvailabilityContext): boolean => {
   const model = (ctx.model ?? "").toUpperCase();
   return !MAINS_CAMERA_MODELS.some((prefix) => model.startsWith(prefix));
 };
+
+/**
+ * The params whose subject IS the physical cell — so every member reading one must carry
+ * {@link notMainsCamera}.
+ *
+ * The ONE place that fact is declared. {@link cellGated} applies {@link notMainsCamera} from this list
+ * when the table is built, so a member never states the gate itself: adding a cell read is adding its
+ * param here, and there is no second place for it to be missing from. A per-member `available` was the
+ * alternative and is what the first two passes of this guard got wrong, in both directions — first by
+ * covering two of the seven, then by reading `unexposed` as covering a third.
+ *
+ * What is NOT here matters as much.
+ *
+ *  - `workingMode` and the three `record*` settings describe how hard the camera works, not what powers
+ *    it, and a mains camera genuinely has them. They are the reason the capability stays attached.
+ *  - `cameraInfo` (1103) is a number whose meaning is unevidenced. Gating it would assert it is a
+ *    battery fact, which is the kind of claim this guard exists to stop making.
+ *  - `powerSource` (1293) is the open one. Both values it names — `Battery` and `External Solar Panel` —
+ *    describe how a CELL is fed, so by this list's own rule it arguably belongs here. It is out because
+ *    every param above is one a live mains camera was observed to publish and 1293 was not among them,
+ *    and because it is `requires`-gated on its own param, so it appears only where the device reports
+ *    it. Gating it would also withhold a described WRITE rather than a read, which is a different class
+ *    of change. Unresolved rather than decided: see the note in the pull request.
+ *
+ * The two solar params ARE here: a panel exists to charge a cell, so a device without one has no solar
+ * harvest to report either.
+ */
+export const CELL_PARAMS: readonly number[] = [
+  BATTERY_PARAM.BATTERY,
+  BATTERY_PARAM.BATTERY_STATUS,
+  BATTERY_PARAM.BATTERY_TEMP,
+  BATTERY_PARAM.BATTERY_HEALTH,
+  BATTERY_PARAM.SOLAR_INTENSITY,
+  BATTERY_PARAM.SOLAR_CONNECT_24H,
+  BATTERY_PARAM.BATTERY_POWER_DATAS,
+];
+
+/**
+ * Apply {@link notMainsCamera} to every member reading a {@link CELL_PARAMS} param, as the table is built.
+ *
+ * Applied rather than checked, so the gate cannot be omitted: a member declares its param and nothing
+ * about mains power, and the two facts stay one declaration. The alternative — the gate on each member,
+ * with a spec holding the two lists equal — states "this read describes the cell" twice and needs a test
+ * to keep the copies in step.
+ *
+ * A member's own `available` is composed with, never replaced: none declares one today, and a future one
+ * would be about something else entirely (a family, a codec), so silently dropping it would be a gate
+ * that reads as present and is not.
+ */
+function cellGated<T extends Members>(members: T): T {
+  const gated = Object.entries(members).map(([name, m]) => {
+    const param = (m as { param?: unknown }).param;
+    if (typeof param !== "number" || !CELL_PARAMS.includes(param)) return [name, m] as const;
+    const own = (m as { available?: (ctx: AvailabilityContext) => boolean }).available;
+    const available = own ? (ctx: AvailabilityContext) => notMainsCamera(ctx) && own(ctx) : notMainsCamera;
+    return [name, { ...(m as object), available }] as const;
+  });
+  return Object.fromEntries(gated) as T;
+}
 
 /**
  * Every `battery` feature, declared once — the property schema, the evidence-gated getters, the derived
@@ -157,7 +233,7 @@ const notMainsCamera = (ctx: AvailabilityContext): boolean => {
  * which the reference site does not carry.
  * @internal
  */
-export const BATTERY_MEMBERS = {
+export const BATTERY_MEMBERS = cellGated({
   /**
    * The headline percentage, and this capability's detection evidence: reporting 1101 is what proves a
    * device is battery-powered, which is also the fact `MediaProvider` reads to decide a stream needs a
@@ -170,7 +246,6 @@ export const BATTERY_MEMBERS = {
     unit: "%",
     kind: "percent",
     provenance: "verified",
-    available: notMainsCamera,
     description: "Battery level 0-100 (verified: param 1101).",
   },
   /**
@@ -183,7 +258,6 @@ export const BATTERY_MEMBERS = {
     type: "bool",
     kind: "boolean",
     provenance: "apk",
-    available: notMainsCamera,
     coerce: (v) => {
       const n = Number(v);
       return n !== 0 && n !== 2;
@@ -377,6 +451,11 @@ export const BATTERY_MEMBERS = {
    * Reported, so it stays in the schema and answers through `getProperty` — but given no typed getter:
    * the payload's fields have never been decoded, and a getter would hand back an opaque blob typed as
    * though it meant something.
+   *
+   * `unexposed` is NOT a substitute for the cell gate. It suppresses the fluent GETTER; `propertiesOf`
+   * filters `writeOnly` and `available` and deliberately not `unexposed`, because a schema entry
+   * reachable through `getProperty` is the whole point of the mark. So a cell param needs
+   * {@link CELL_PARAMS} either way, or a mains camera publishes "battery power history" and answers it.
    */
   batteryPowerStats: {
     param: BATTERY_PARAM.BATTERY_POWER_DATAS,
@@ -406,7 +485,7 @@ export const BATTERY_MEMBERS = {
       "Raw GET_CAMERA_INFO value (1103), meaning unevidenced — read live as the constant 5 on a T8170 at " +
       "92% and a T8171 at 27%, so it is NOT a low-battery flag.",
   },
-} as const satisfies Members;
+} as const satisfies Members);
 
 export const BATTERY: CapabilityModule = {
   capability: "battery",

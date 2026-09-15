@@ -40,12 +40,40 @@ npm run verify
 ```
 
 It chains, in CI order: `format:check` → `typecheck` → the guards → `build` → the `.d.ts` seal guard →
-an ESM load smoke test → `typecheck:examples` → `test`. A green `npm test` alone is **not** the bar.
-`.github/workflows/ci.yml` invokes the same script, so green `verify` means green CI.
+an ESM load smoke test → `check:snippets` → `typecheck:examples` → `test`. A green `npm test` alone is
+**not** the bar. `.github/workflows/ci.yml` invokes the same script, so green `verify` means green CI.
 
 Individual pieces if you need them: `npm run guard:decorrelation`, `npm run guard:lines`,
 `npm run guard:docrefs`, `npm run guard:consumer-agnostic`, `npm run guard:capability-ownership`,
-`npm run guard:seal` (build first), `npm run check:esm`, and `npm run format` to auto-fix formatting.
+`npm run guard:seal` (build first), `npm run check:esm`, `npm run check:snippets`, and
+`npm run format` to auto-fix formatting.
+
+### Documented snippets are compiled
+
+`check:snippets` typechecks every ` ```ts ` block that ships, against this commit's own types —
+the guides under `docs/`, the `README`, and the fences inside `src/` JSDoc that generate the published
+reference. It types them; it never runs them. Whether a snippet WORKS needs a device and belongs in
+`examples/`.
+
+(Not to be confused with `guard:docs`, one character away, which guards the generated reference's
+publication and lives outside `verify`.)
+
+A snippet is compiled as a fragment: the shared vocabulary the guides use without declaring — `dev`,
+`eufy`, `cam`, `clean`, `light`, … — comes from a prelude in the script, and a bare `…` is treated as an
+elision. Two markers, both invisible to a reader, go immediately above a fence:
+
+```md
+<!-- typecheck: skip — pseudocode for the retry shape, not real API -->
+<!-- typecheck: host bus, consumeAudio -->
+```
+
+`skip` drops the snippet; put the reason in the marker so the next reader knows it was a decision.
+`host` declares names belonging to the READER — their event bus, their UI slider — as `any`, which
+leaves every SDK call around them checked as before.
+
+**Never `host` a name of ours.** `any` is an opt-out from the guard, so hosting an SDK type disables
+the check on our own surface, which is the failure this gate exists to prevent. If the shared
+vocabulary is genuinely missing a name, add it to the prelude with its real type instead.
 
 **One gate lives outside `verify`:** `guard:docs`, the publication guard over the generated API
 reference. It needs the docs toolchain, which `verify` deliberately does not require. Reproduce it

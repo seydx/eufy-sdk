@@ -117,6 +117,8 @@ const quiet = new EufyMega({ email, password, logger: new ConsoleLogger("warn") 
 To route logs into your own stack, pass anything that implements the `Logger` shape
 (`debug`/`info`/`warn`/`error` methods) — **tslog and winston satisfy it directly**:
 
+<!-- typecheck: skip — imports tslog, a package the reader has and this repo does not depend on -->
+
 ```ts
 import { Logger as TsLogger } from "tslog";
 const eufy = new EufyMega({ email, password, logger: new TsLogger() });

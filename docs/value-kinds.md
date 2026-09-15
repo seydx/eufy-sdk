@@ -87,6 +87,8 @@ always safe to show, instead of a crash or a wrong unit.
 If you would rather branch on it explicitly, `isKnownValueKind` narrows a kind to the set this version
 models, and `KNOWN_VALUE_KINDS` is that set as data:
 
+<!-- typecheck: host log -->
+
 ```ts
 import { isKnownValueKind, KNOWN_VALUE_KINDS } from "@mega-yfue/eufy-sdk";
 

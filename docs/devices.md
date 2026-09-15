@@ -52,7 +52,7 @@ import { PtzDirection, ArmingMode } from "@mega-yfue/eufy-sdk";
 
 await dev.camera?.()?.on(); // power on
 const stored = await dev.camera?.()?.snapshotStored?.(); // → Buffer; latest retained push JPEG
-const fresh = await dev.camera?.()?.snapshotLive(); // → { jpeg, width, height }; fresh live capture
+const fresh = await dev.camera?.()?.snapshotLive?.(); // → { jpeg, width, height }; fresh live capture
 await dev.ptz?.()?.rotate(PtzDirection.left, 1.0); // PTZ step — see the PTZ guide
 await dev.light?.()?.setBrightness(50); // spotlight 1–100
 await dev.arming?.()?.setMode(ArmingMode.home); // guard mode
@@ -148,15 +148,17 @@ different ones — so nothing a device exposes lets a caller work out which appl
 So the SDK does not hand over the number. It reports how many steps the device offers, which one is
 current, and takes a step back:
 
+<!-- typecheck: host slider, onChange -->
+
 ```ts
 const m = dev.motion?.();
 const steps = m?.sensitivitySteps(); // 5, 7 … or undefined
 
-if (steps === undefined) {
+if (!m || steps === undefined) {
   // Not drivable on this device — don't offer the control.
 } else {
   slider({ min: 1, max: steps, value: m.sensitivityStep() ?? 1 });
-  onChange = (step) => m.setSensitivityStep(step);
+  onChange = (step: number) => m.setSensitivityStep(step);
 }
 ```
 
@@ -221,6 +223,8 @@ Lock:
 ## Devices joining or leaving
 
 The account roster is re-checked on the same interval as [cloud params](/connectivity#cloud-param-polling):
+
+<!-- typecheck: host registerAccessory, dropAccessory -->
 
 ```ts
 eufy.on("deviceAdded", (d) => registerAccessory(d));

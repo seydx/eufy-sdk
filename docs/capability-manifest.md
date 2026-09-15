@@ -23,6 +23,8 @@ See `examples/10-describe-device.ts` for the runnable version, which also reads 
 
 ## What you get
 
+<!-- typecheck: skip — a sketch of the returned SHAPE, not a statement: a bare object literal with elided fields -->
+
 ```ts
 {
   sn, codec, source,
@@ -34,7 +36,7 @@ See `examples/10-describe-device.ts` for the runnable version, which also reads 
   details: [
     {
       capability: "battery",
-      accessor: "battery",         // dev.battery()
+      accessor: "battery",         // dev.battery?.()
       reads: [
         { accessor: "level", property: "battery", type: "number",
           kind: "percent", unit: "%", writable: false, description: "…" },

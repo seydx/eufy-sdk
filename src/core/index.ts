@@ -5,5 +5,6 @@ export * from "./raw-dp-writer.js";
 export * from "./raw-dp-hex.js";
 export * from "./logger.js";
 export * from "./store.js";
+export * from "./solix-types.js";
 export * from "./util.js";
 export * from "./lz4-block.js";

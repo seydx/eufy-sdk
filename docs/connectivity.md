@@ -175,6 +175,8 @@ differs per device: a mains camera reports constantly, while a battery contact s
 days by design and be perfectly healthy. If the SDK picked one number it would be wrong for somebody —
 so you decide:
 
+<!-- typecheck: host myThresholdFor, deviceKind -->
+
 ```ts
 const stale = Date.now() - (s.lastSeenMs ?? 0) > myThresholdFor(deviceKind);
 ```

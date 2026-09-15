@@ -12,11 +12,11 @@
  * @module model/param-namespace
  */
 import type { Codec } from "./types.js";
-import { SECURITY_PARAMS, CLEAN_PARAMS, type ParamDef } from "./param-dictionary.js";
+import { SECURITY_PARAMS, CLEAN_PARAMS, type ParamDef, DISPLAY_PARAMS } from "./param-dictionary.js";
 import { LIFE_PARAMS } from "./life-params.js";
 
 /** The param id spaces this SDK models. */
-export type ParamNamespace = "security" | "clean" | "life" | "print";
+export type ParamNamespace = "security" | "clean" | "life" | "print" | "display";
 
 const TABLES: Record<ParamNamespace, Record<number, ParamDef>> = {
   security: SECURITY_PARAMS,
@@ -26,6 +26,9 @@ const TABLES: Record<ParamNamespace, Record<number, ParamDef>> = {
   // (printer-support plan Stage 3). Present so the printer codec resolves to its OWN namespace rather
   // than falling through to `security` and decoding another line's dictionary.
   print: {},
+  // Smart Display (T87Ax) — ids 8001-8006, four of them named. Same reason as `print`: its own
+  // dictionary rather than a corner of another line's.
+  display: DISPLAY_PARAMS,
 };
 
 /** Look up a param def in the given namespace. */
@@ -43,17 +46,13 @@ export function paramDef(ns: ParamNamespace, paramType: number): ParamDef | unde
  * `mower` shares the **clean** namespace: it's a Clean-line Tuya-DP device (the app's `TuyaP2PMower`
  * family), so its DPs live in the same `~150-180` space as the vacuums.
  *
- * `display` (the T87Ax Smart Display line) is placed in **`security`** by maintainer decision, not wire
- * evidence — the confirmed transport is secure MQTT with no `p2p_did`, never P2P, and its own params
- * (8001-8006) don't presently exist in `SECURITY_PARAMS`. Grouping it here means (a) a future security
- * param assigned in that id range would silently misdecode against this device, and (b) any security
- * capability whose `modelHints` regex matches this device's reported name/model text becomes
- * inference-attachable — the exact `T8L20`-as-"Outdoor Spotlights" collision this partition otherwise
- * guards against, now possible for `display` too. Measured, not hypothetical: with an adversarial name
- * (see `line-partition.spec.ts`'s `POISONED` case) six security capabilities currently attach this way;
- * the real device's actual reported name doesn't trigger any of them today (see `model.spec.ts`'s
- * display test), so this isn't a live problem, only an open door — flagged here so a future reader
- * doesn't mistake either the grouping or its current quiet outcome for evidence that it's safe.
+ * `display` (the T87Ax Smart Display line) reads its own dictionary for the same reason every other
+ * line does: nothing in the 8001-8006 range carries a security meaning, so reading those ids against
+ * `SECURITY_PARAMS` would decode a future security param assigned in that range as whatever it means on
+ * a camera. The product line in `CODEC_LINE` is the other half — without it, any security capability
+ * whose `modelHints` regex matched this device's reported name is inference-attachable, which
+ * `line-partition.spec.ts`'s `POISONED` case measures at six on a device that speaks no P2P and can
+ * answer for none of them.
  */
 const NAMESPACE_BY_CODEC: Record<Codec, ParamNamespace> = {
   station: "security",
@@ -65,7 +64,7 @@ const NAMESPACE_BY_CODEC: Record<Codec, ParamNamespace> = {
   mower: "clean",
   light: "life",
   printer: "print",
-  display: "security",
+  display: "display",
 };
 
 /** The param namespace a device's ids live in, from its codec, via the module-local `NAMESPACE_BY_CODEC` table. */

@@ -6,8 +6,9 @@ import { FakeP2PSession, p2pVideoFrame } from "./live-source-fixtures.js";
 /**
  * An attached stream the station stopped serving re-asserts its channel, once its media has actually stopped.
  *
- * The 3 s re-assert is settled by the first own-channel frame, because a station serving one camera at a time
- * is re-tasked by every re-assert: two attached streams doing it continuously contend forever — measured as a
+ * The 3 s re-assert is settled by the first own-channel frame, because one session serving one camera at a
+ * time is re-tasked by every re-assert: two attached streams sharing one and doing it continuously contend
+ * forever — measured as a
  * full start every 3 s from each, and settling it is what let both hold a 40 s stream.
  *
  * Settling it for the stream's whole life left nothing to recover a stream the station later gave to a
@@ -23,17 +24,18 @@ const ownFrame = (channel: number) =>
 
 function attached(stallMs: number, reassertWanted?: () => boolean) {
   const session = new FakeP2PSession();
+  const debug = vi.fn();
   const stream = new LiveStream(session as unknown as P2PSession, {
     channel: 2,
     homeBaseAttached: true,
     keepAliveMs: 20,
     stallMs,
     reassertWanted,
-    logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    logger: { debug, info: vi.fn(), warn: vi.fn(), error: vi.fn() },
   });
   stream.on("video", () => undefined);
   stream.start();
-  return { session, stream };
+  return { session, stream, traces: () => debug.mock.calls.flatMap(([, trace]) => (trace ? [trace] : [])) };
 }
 
 const settle = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -71,6 +73,21 @@ describe("an attached stream whose station stopped serving it", () => {
     stream.stop();
   });
 
+  /**
+   * The silence and what was done about it are traced, because a picture that stopped advancing while nothing
+   * here fires stopped for a reason the station's attention cannot repair.
+   */
+  it("states the silence it acted on, and that it re-asserted", async () => {
+    const { session, stream, traces } = attached(50);
+    session.push(ownFrame(2));
+    await settle(140);
+
+    expect(traces()).toContainEqual(
+      expect.objectContaining({ phase: "channel-silent", silentMs: 50, outcome: "reasserted" }),
+    );
+    stream.stop();
+  });
+
   it("re-asserts nothing once stopped", async () => {
     const { session, stream } = attached(40);
     session.push(ownFrame(2));
@@ -94,6 +111,17 @@ describe("an attached stream nothing is attached to", () => {
     await settle(200);
 
     expect(session.starts.length).toBe(settled);
+    stream.stop();
+  });
+
+  it("states that it declined the channel rather than saying nothing at all", async () => {
+    const { session, stream, traces } = attached(50, () => false);
+    session.push(ownFrame(2));
+    await settle(140);
+
+    expect(traces()).toContainEqual(
+      expect.objectContaining({ phase: "channel-silent", silentMs: 50, outcome: "declined" }),
+    );
     stream.stop();
   });
 

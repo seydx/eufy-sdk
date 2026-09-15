@@ -13,7 +13,7 @@ list, the realtime channels, and the unified event stream.
 ```ts
 import { EufyMega } from "@mega-yfue/eufy-sdk";
 
-const eufy = new EufyMega({ email, password, region: "eu", store });
+const eufy = new EufyMega({ email, password, region: "eu-pr", store });
 ```
 
 Its job is orchestration only. It exposes three groups of methods:
@@ -97,10 +97,10 @@ Camera media hangs off a bound camera's action object. Live egress is built arou
 consumers** — every live view, fresh snapshot, and recording on a camera shares a single session:
 
 ```ts
-const cam = (await eufy.getDevice(sn)).camera();
+const cam = (await eufy.getDevice(sn)).camera?.();
 const stored = await cam?.snapshotStored?.(); // passive retained push JPEG; no live pull
-const fresh = await cam?.snapshotLive(); // explicit fresh capture from the shared live source
-const stream = await cam?.live(); // raw frames
+const fresh = await cam?.snapshotLive?.(); // explicit fresh capture from the shared live source
+const stream = await cam?.live?.(); // raw frames
 const r = await cam?.openReadable?.(); // a node Readable
 for await (const frag of cam!.recordFragments!()) {
   /* CMAF for HLS/MSE */

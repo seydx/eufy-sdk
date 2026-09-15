@@ -69,7 +69,7 @@ export interface SharedLiveSourceOptions {
    * `.start()` itself.
    *
    * `ctx.reassertWanted` answers whether this pull still has anyone attached. A stream that re-asserts a
-   * channel to hold it open should consult it, so a pull nothing is watching stops competing for a station
+   * channel to hold it open should consult it, so a pull nothing is watching stops competing for a session
    * that serves one camera at a time.
    */
   makeStream: (ctx: { reassertWanted: () => boolean }) => LiveStreamHandle;
@@ -130,6 +130,15 @@ export interface SharedLiveSourceOptions {
    * an owner does in response to this callback.
    */
   onStartFailed?: () => void;
+  /**
+   * The pull has ended and will not resume: the linger elapsed, the battery budget ran out, or the source
+   * was torn down. A later attach builds a fresh stream rather than reviving this one.
+   *
+   * Distinct from {@link onIdle} by what is still running. `onIdle` fires at the last detach, while the
+   * linger is still holding the pull open so a quick re-attach costs nothing; between the two the pull is
+   * alive. This fires when it is not.
+   */
+  onStopped?: () => void;
   /**
    * A media start was abandoned unacknowledged before anything was delivered, so this session is not being
    * heard. The owner is asked for a replacement and calls {@link SharedLiveSource.rewarm} once it has one.
@@ -923,6 +932,7 @@ export class SharedLiveSource {
     this.configuredFrom = undefined;
     this.ring = [];
     this._state = state;
+    if (state === "stopped") this.opts.onStopped?.();
     if (startFailed && report) this.opts.onStartFailed?.();
   }
 

@@ -1,4 +1,4 @@
-import { detectCapabilities, CAPABILITY_MODULES } from "../index.js";
+import { buildCommand, detectCapabilities, CAPABILITY_MODULES } from "../index.js";
 import type { Capability, Codec } from "../../types.js";
 
 /**
@@ -22,7 +22,7 @@ const EXPECTED_LINE: Record<Codec, string> = {
   mower: "clean",
   light: "life",
   printer: "print",
-  display: "security",
+  display: "display",
 };
 
 /** A name stuffed with trigger words from every line at once — the adversarial case. */
@@ -47,18 +47,19 @@ describe("product-line partition", () => {
     expect(crossed).toEqual([]);
   });
 
-  it("pins the display codec's actual exposure to a poisoned name, now that its line is security", () => {
-    // The generic it.each above can't catch this: display's line IS security, so a poisoned-name match
-    // against a security capability is no longer a "cross" by that test's own definition. This is the
-    // real, current consequence of that grouping (a maintainer decision, not wire evidence — see
-    // namespaceForCodec's doc comment): six security-line capabilities attach on adversarial name text
-    // alone, none of them reachable (no P2P path exists for this device at all). The real device name
-    // ("Eufy Smart Display" / "Smart Display E10") doesn't trigger any of this — see model.spec.ts's
-    // display test — so it isn't a live problem today. Pinned so the day this SET changes (a security
-    // module's modelHints starts matching different text, or a new one is added) is visible in CI
-    // instead of silently passing, since `crossed` is `[]` either way.
+  it("gives a poisoned Smart Display name nothing but its own line", () => {
+    // This test used to pin the OPPOSITE, and the change is the point of `display` being its own line.
+    // While the codec was grouped into `security`, a poisoned name attached six security capabilities —
+    // light, doorbell, leak, smoke, co, lock — because detection evidence is OR-ed and each of those
+    // matches on NAME alone. None was reachable: this device speaks no P2P at all, so every one of them
+    // was a control that could never answer. The generic it.each above could not catch it either, since
+    // a security capability on a security-line codec is not a "cross" by its own definition.
+    //
+    // Kept as an explicit assertion rather than deleted, because the guard that matters is the exact
+    // SET: a new security module whose modelHints matched this text would be invisible to a `crossed`
+    // check that is empty either way.
     const caps = detectCapabilities({ model: "T87A0", category: "eufy_mega", name: POISONED } as never, "display");
-    expect(caps).toEqual(["light", "doorbell", "leak", "smoke", "co", "lock", "info"]);
+    expect(caps).toEqual(["display", "info"]);
   });
 
   it("keeps a smart light off the camera-spotlight capability while granting its own", () => {
@@ -96,6 +97,22 @@ describe("product-line partition", () => {
     }
   });
 
+  it("puts a codec-less device on no line at all — only the line-agnostic capabilities may match", () => {
+    // A separate ecosystem (its own account and backend) has no truthful codec, so it omits the field
+    // rather than borrowing a eufy family's. Every line-bearing module is then unreachable, including
+    // the ones a name or a param id would otherwise match on its own.
+    const rec = { model: "T8000P0000000000", name: POISONED, params: { 1011: "1" } } as never;
+    const caps = detectCapabilities(rec, undefined);
+    for (const cap of caps) expect(lineOf(cap), cap).toBe("any");
+    // The same record WITH a codec resolves plenty, so the absent codec is what withheld them.
+    expect(detectCapabilities(rec, "camera").length).toBeGreaterThan(caps.length);
+    // And no command can be built for a capability the device is not credited with.
+    expect(buildCommand("motionDetection", true, { channel: 0, paramIds: new Set([1011]) })).toBeUndefined();
+    expect(
+      buildCommand("motionDetection", true, { codec: "camera", channel: 0, paramIds: new Set([1011]) }),
+    ).toBeDefined();
+  });
+
   it("pins each non-security module's declared line, so a silent retag fails here", () => {
     // `lineOf` defaults to "security", so asserting membership of the union would pass for any module
     // that simply forgot to declare one. Pin the modules that must NOT be security instead.
@@ -103,9 +120,10 @@ describe("product-line partition", () => {
     expect(CAPABILITY_MODULES.vacuum_clean.line).toBe("clean");
     expect(CAPABILITY_MODULES.suction.line).toBe("clean");
     expect(CAPABILITY_MODULES.locate.line).toBe("clean");
+    expect(CAPABILITY_MODULES.display.line).toBe("display");
     expect(CAPABILITY_MODULES.info.line).toBe("any");
     for (const cap of Object.keys(CAPABILITY_MODULES) as Capability[]) {
-      expect(["security", "life", "clean", "print", "any"]).toContain(lineOf(cap));
+      expect(["security", "life", "clean", "print", "display", "any"]).toContain(lineOf(cap));
     }
   });
 });

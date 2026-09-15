@@ -4,11 +4,11 @@
  * Cloud APIs:  the eufy v6 cloud (+ legacy, planned)
  * Realtime:    secure MQTT (appliances)  +  P2P (cameras/HomeBases)
  *
- *   const eufy = new EufyMega({ email, password, region: "eu" });
+ *   const eufy = new EufyMega({ email, password, region: "eu-pr" });
  *   await eufy.login(); // → LoginResult; on success the SDK auto-starts realtime (push/MQTT/wired P2P)
  *   eufy.on("motion", (e) => console.log(e.deviceSn)); // typed semantic events — flowing already
  *   const dev = await eufy.getDevice((await eufy.getDevices())[0].sn);
- *   await dev.camera()?.snapshotStored();
+ *   await dev.camera?.()?.snapshotStored?.();
  *
  * Connectivity is SDK-managed: the host calls no `connect*`. P2P to a battery camera is opened only
  * when a command/stream/doorbell-ring needs it and closed when idle, so the camera can sleep.
@@ -910,8 +910,8 @@ export class EufyMega extends EventEmitter {
    * @example
    * ```ts
    * const res = await eufy.login();
-   * if (res.status === "captcha") await eufy.solveCaptcha(await ask(res.image));
-   * else if (res.status === "2fa") await eufy.submitVerifyCode(await ask());
+   * if (res.status === "captcha") await eufy.solveCaptcha(await promptUser(res.image));
+   * else if (res.status === "2fa") await eufy.submitVerifyCode(await promptUser());
    * ```
    */
   async login(opts: { messageType?: number } = {}): Promise<LoginResult> {
@@ -1061,9 +1061,9 @@ export class EufyMega extends EventEmitter {
   /**
    * Combine explicit P2P media with the optional passive push-thumbnail provider.
    *
-   * The retained still also becomes the answer for a live still that could not be captured. A station
-   * serves one camera at a time and a live view outranks a tile, so a still asked for while a sibling is
-   * being watched is refused at the transport. Answering the retained bytes answers the read rather than
+   * The retained still also becomes the answer for a live still that could not be captured. One session
+   * serves one camera at a time and a live view outranks a tile — a still does not open a connection of its
+   * own — so a still asked for while a sibling is being watched is refused at the transport. Answering the retained bytes answers the read rather than
    * failing it, marked {@link MediaProvider.snapshotLive} `retained` so the caller knows they are not
    * current. With nothing retained the refusal stands.
    */
@@ -1232,7 +1232,7 @@ export class EufyMega extends EventEmitter {
    * @example
    * ```ts
    * const dev = await eufy.getDevice(sn);
-   * if (dev.has("camera")) await dev.camera()?.snapshotStored();
+   * if (dev.has("camera")) await dev.camera?.()?.snapshotStored?.();
    * console.log(dev.getProperty("battery"));
    * ```
    */
@@ -1857,10 +1857,15 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * Stations with a live P2P session. P2P is auto-managed: wired stations are warmed at login, battery
+   * The open P2P sessions, by key. P2P is auto-managed: wired stations are warmed at login, battery
    * stations open on demand (command / stream, or an opted-in event pre-warm) and idle-detach — so this
-   * map grows and shrinks over time. `p2pConnect(stationSn)` / `p2pClose(stationSn)` events track the
-   * changes.
+   * map grows and shrinks over time.
+   *
+   * A station's own session is keyed by its serial, and `p2pConnect(stationSn)` / `p2pClose(stationSn)`
+   * track those. A station serving more than one camera at once also holds a session per extra camera,
+   * keyed `<stationSn>#live:<channel>` — these carry media alone and raise no connection events, because
+   * a station announces its state to every client that connects and reporting each copy would double
+   * every event the station's own session already delivers.
    */
   getP2pSessions(): Map<string, P2PSession> {
     return this.p2p.getSessions();

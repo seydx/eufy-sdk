@@ -33,6 +33,7 @@ import {
   buildActions,
   accessorNamesFor,
   describeCapabilities,
+  claimedParams,
   type DeviceActionMap,
   type CapabilityAccessors,
   type DeviceManifest,
@@ -169,6 +170,11 @@ export class Device {
    * different wire ids across device families still resolves to one named value.
    */
   private specByParam!: ReadonlyMap<number, { spec: PropertySpec; invert: boolean }>;
+  /**
+   * Params a resolved capability declares that this device's schema does not carry — withheld by a
+   * member's gate, so not named from the param dictionary either. See {@link Device.applyParams}.
+   */
+  private withheld: ReadonlySet<number> = new Set();
   /** Which param namespace this device's ids live in (clean DPs vs security P2P). */
   private namespace!: ParamNamespace;
   /** The record's `device_name` as stated, before the {@link modelName} fallback is applied. */
@@ -238,6 +244,7 @@ export class Device {
         if (!byParam.has(a.paramType)) byParam.set(a.paramType, { spec: p, invert: a.invert ?? false });
     }
     this.specByParam = byParam;
+    this.withheld = new Set([...claimedParams(resolved.capabilities)].filter((pt) => !byParam.has(pt)));
     this.namespace = namespaceForCodec(resolved.codec);
     this.installAccessors();
   }
@@ -420,6 +427,16 @@ export class Device {
    * Apply a raw param map (cloud record or P2P notification). Known params update their named
    * property; unrecognised params are retained as `unknown_<paramType>` so nothing is lost.
    *
+   * Naming precedence: this device's own `PropertySpec` (curated), then the param dictionary for its
+   * namespace, then the `unknown_<paramType>` passthrough. The dictionary def is consulted even where a
+   * spec exists, because `encoding` lives there.
+   *
+   * A param a resolved capability's gate WITHHELD takes the passthrough instead of its dictionary name.
+   * The gate decided the read does not describe this device, the dictionary names it what the member
+   * would have, and republishing it there hands a caller a reading indistinguishable from one the device
+   * really answered. A capability that never resolved withholds nothing: a param arriving before its
+   * capability is still the device's own, and keeps its dictionary name.
+   *
    * @param params param_type → raw value.
    * @param ts observation time (epoch ms); defaults to `Date.now()`.
    * @returns the list of property names whose value changed.
@@ -434,7 +451,7 @@ export class Device {
       // always consulted (even when a capability spec exists) because `encoding` lives there.
       const hit = this.specByParam.get(pt);
       const spec = hit?.spec;
-      const def = paramDef(this.namespace, pt);
+      const def = this.withheld.has(pt) ? undefined : paramDef(this.namespace, pt);
       const name = spec ? spec.name : def ? def.name : `${UNKNOWN_PARAM_PREFIX}${pt}`;
       const value: ParamValue = def?.encoding
         ? decodeEncoded(rawVal, def.encoding) // base64+json / json → structured object

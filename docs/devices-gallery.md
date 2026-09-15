@@ -35,7 +35,7 @@ watch(q, apply);
 # Devices
 
 One SDK for the entire Anker eufy ecosystem — **Security**, **Clean** (RoboVac), **Robot Mowers**,
-**Mum & Baby**, and **Life**.
+**Display**, **Mum & Baby**, and **Life**.
 
 ::: info Independent and unofficial
 Device names, model codes, and product imagery on this page identify the hardware this SDK talks to.
@@ -679,6 +679,25 @@ The eufy **Clean** line — robot **vacuums** (the classic **RoboVac** and newer
 <figure>
   <img src="/devices/mower/mower-T2880.webp" alt="Mower E15 T2880" loading="lazy" />
   <figcaption>Mower E15 <span class="model">T2880</span></figcaption>
+</figure>
+
+</div>
+
+## 🖥️ Display
+
+### 🖥️ Smart displays
+
+The eufy **Display** line — a `display` codec and product line of its own, not a security device: it
+connects over secure MQTT with no `p2p_did` and speaks no P2P at all. The `display` capability reads the
+screen's charge (param 8001); its retail name, model code and a version-shaped string are readable by
+name without a typed getter. Read-only — no display write is captured. See the
+[Smart Display guide](/smart-display).
+
+<div class="device-gallery">
+
+<figure>
+  <img src="/devices/security/security-T87A0.webp" alt="Smart Display E10 T87A0" loading="lazy" />
+  <figcaption>Smart Display E10 <span class="model">T87A0</span></figcaption>
 </figure>
 
 </div>

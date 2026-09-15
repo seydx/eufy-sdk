@@ -193,7 +193,7 @@ export class SecureMqtt extends EventEmitter implements RealtimeTransport {
    * four topics for `eufy_life`).
    *
    * The grants are INSPECTED, not assumed: AWS IoT answers a policy-denied filter with a
-   * `SUBACK_FAILURE` (`0x80`) grant rather than failing the SUBSCRIBE, so subscribing with a credential
+   * SUBACK_FAILURE (`0x80`) grant rather than failing the SUBSCRIBE, so subscribing with a credential
    * whose scope doesn't cover the topic looks identical to success and then delivers nothing. A denied
    * topic is reported via `error` naming the credential scope; only an all-denied device throws, so a
    * line that grants its state channel but refuses (say) the OTA leg still works.
@@ -201,9 +201,8 @@ export class SecureMqtt extends EventEmitter implements RealtimeTransport {
   async subscribeDevice(device: EufyDevice): Promise<void> {
     if (!this.client) throw new Error("SecureMqtt not connected");
     const topics = [...subscribeTopics(device)];
-    const grants = await this.client.subscribeAsync(topics, { qos: 1 });
+    const { denied } = this.partitionGrants(await this.client.subscribeAsync(topics, { qos: 1 }));
     const scope = this.o.credentials.app_name ?? "default";
-    const denied = grants.filter((g) => g.qos === SUBACK_FAILURE).map((g) => g.topic);
     if (denied.length === topics.length) {
       throw new Error(
         `subscribe ${device.sn}: every topic denied on credential scope "${scope}" — ` +
@@ -213,6 +212,32 @@ export class SecureMqtt extends EventEmitter implements RealtimeTransport {
     for (const topic of denied) {
       this.emit("error", new Error(`subscribe ${device.sn}: "${topic}" denied on credential scope "${scope}"`));
     }
+  }
+
+  /**
+   * Subscribe to explicit topic filters, returning the topics that were granted. A scope-denied filter
+   * comes back with SUBACK_FAILURE rather than an error (AWS IoT quirk), so it is dropped from the result
+   * instead of throwing — callers that need every leg check the returned list. Used by lines whose topic
+   * vocabulary isn't the eufy `subscribeTopics` shape (e.g. Anker Solix `dt/{app}/{pn}/{sn}`).
+   */
+  async subscribe(topics: string[]): Promise<string[]> {
+    if (!this.client) throw new Error("SecureMqtt not connected");
+    return this.partitionGrants(await this.client.subscribeAsync(topics, { qos: 1 })).granted;
+  }
+
+  /**
+   * Split SUBACK grants into granted vs scope-denied topics. AWS IoT marks a policy-denied filter with a
+   * SUBACK_FAILURE (`0x80`) grant rather than failing the SUBSCRIBE, so the two subscribe paths share
+   * this split and layer their own policy (drop vs report) on top.
+   */
+  private partitionGrants(grants: ReadonlyArray<{ topic: string; qos: number }>): {
+    granted: string[];
+    denied: string[];
+  } {
+    const granted: string[] = [];
+    const denied: string[] = [];
+    for (const g of grants) (g.qos === SUBACK_FAILURE ? denied : granted).push(g.topic);
+    return { granted, denied };
   }
 
   /**

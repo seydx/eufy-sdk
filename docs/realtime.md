@@ -31,7 +31,7 @@ devices, and send actions:
 await eufy.login(); // realtime comes up on its own
 eufy.on("motion", (e) => console.log("motion on", e.deviceSn));
 const dev = await eufy.getDevice(sn);
-await dev.camera?.()?.snapshotLive(); // explicit fresh capture; opens P2P on demand
+await dev.camera?.()?.snapshotLive?.(); // explicit fresh capture; opens P2P on demand
 ```
 
 Stored snapshots follow a separate path: qualifying push thumbnails are acquired eagerly, and

@@ -1,5 +1,5 @@
 import { CAPABILITY_MODULES } from "../index.js";
-import { SECURITY_PARAMS, CLEAN_PARAMS } from "../../param-dictionary.js";
+import { SECURITY_PARAMS, CLEAN_PARAMS, DISPLAY_PARAMS } from "../../param-dictionary.js";
 import { LIFE_PARAMS } from "../../life-params.js";
 import type { CapabilityModule } from "../types.js";
 import type { ValueMember } from "../members.js";
@@ -25,6 +25,7 @@ const KNOWN_IDS = new Set<number>([
   ...Object.keys(SECURITY_PARAMS).map(Number),
   ...Object.keys(CLEAN_PARAMS).map(Number),
   ...Object.keys(LIFE_PARAMS).map(Number),
+  ...Object.keys(DISPLAY_PARAMS).map(Number),
 ]);
 
 /**

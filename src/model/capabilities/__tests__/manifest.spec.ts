@@ -31,11 +31,18 @@ const allParams = (): Set<number> =>
     ),
   );
 
-const ctxWith = (paramIds: Set<number>): CommandContext => ({
+/**
+ * `model` is optional and worth passing wherever the fixture names one: without it a model-gated read
+ * installs on everything, so a fixture claiming to be a particular camera proves nothing about that
+ * camera. That is how a `T8410` record came to assert it installs a battery `level` — the record said
+ * one model and the context it was bound with knew none.
+ */
+const ctxWith = (paramIds: Set<number>, model?: string): CommandContext => ({
   channel: 0,
   codec: "camera",
   paramIds,
   capabilities: new Set(MODULES.map((m) => m.capability)),
+  ...(model ? { model } : {}),
 });
 
 /** Describe the bound objects of a synthetic device that HAS every capability. */
@@ -194,15 +201,22 @@ describe("describeCapabilities — enumeration of the live bound objects", () =>
   });
 
   /**
-   * The read's set and the action's are separate answers on purpose: a station reports nine guard modes
-   * and can be SET to the four whose write is confirmed. Published together so a caller shows the current
-   * mode from the labels and offers only what will be accepted — the same declaration the write itself is
-   * checked against, so the offer cannot promise a refusal.
+   * A stateful action says which read it REFLECTS, and the domain is published there — once.
+   *
+   * The derived argument deliberately carries no `values` of its own: a second copy beside the read's
+   * `enumValues` could only drift from it. So a caller offering the control reads the domain off the
+   * reflected read, and that indirection is the thing to hold, because it is what makes one declaration
+   * serve the check, the refusal message and the offered control alike.
+   *
+   * A member that states its own `args[0].values` is the exception, and means the two genuinely differ —
+   * a device reporting a value it will not accept back. No member states one today.
    */
-  it("offers what an action accepts, not everything its read reports", () => {
+  it("points an action at the read whose domain it accepts, rather than restating it", () => {
     const arming = describeAll(allParams()).find((d) => d.capability === "arming")!;
-    expect(arming.reads.find((r) => r.accessor === "mode")!.values).toEqual([0, 1, 2, 3, 4, 5, 6, 47, 63]);
-    expect(arming.actions.find((a) => a.name === "setMode")!.args![0].values).toEqual([0, 1, 3, 63]);
+    const setMode = arming.actions.find((a) => a.name === "setMode")!;
+    expect(setMode.reflects).toBe("mode");
+    expect(arming.reads.find((r) => r.accessor === setMode.reflects)!.values).toEqual([0, 1, 2, 3, 4, 5, 6, 47, 63]);
+    expect(setMode.args![0].values).toBeUndefined();
   });
 
   /** An action taking nothing SAYS so, so a caller can offer it as a plain button. */
@@ -223,10 +237,13 @@ describe("describeCapabilities — enumeration of the live bound objects", () =>
 });
 
 describe("Device.describe — the manifest a caller renders from", () => {
-  const record = { deviceType: 30, model: "T8410", category: "eufy_security", params: { 1101: "88", 1102: "1" } };
+  // A battery camera, since the record reports a level and the spec below asserts the `level` read
+  // installs. `T8410` is mains-only (see MAINS_CAMERA_MODELS), so that assertion was only true because
+  // the bind context carried no model for the gate to read.
+  const record = { deviceType: 30, model: "T8114", category: "eufy_security", params: { 1101: "88", 1102: "1" } };
   const bound = (): Device => {
     const dev = Device.fromRecord("T8000P0000000000", record);
-    dev.bindActions(ctxWith(new Set([1101, 1102])), sink);
+    dev.bindActions(ctxWith(new Set([1101, 1102]), record.model), sink);
     return dev;
   };
 
@@ -296,8 +313,8 @@ describe("Device.describe — the manifest a caller renders from", () => {
 describe("describing a device sends nothing", () => {
   it("dispatches no command", () => {
     const sent: Command[] = [];
-    const dev = Device.fromRecord("T8000P0000000000", { deviceType: 30, model: "T8410", params: { 1101: "88" } });
-    dev.bindActions(ctxWith(allParams()), { dispatch: async (c) => void sent.push(c) });
+    const dev = Device.fromRecord("T8000P0000000000", { deviceType: 30, model: "T8114", params: { 1101: "88" } });
+    dev.bindActions(ctxWith(allParams(), "T8114"), { dispatch: async (c) => void sent.push(c) });
     dev.describe();
     expect(sent).toEqual([]);
   });

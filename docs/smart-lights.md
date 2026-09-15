@@ -31,7 +31,7 @@ On a T8L02 with reported segment-count evidence, select one plain RGB colour ind
 gallery-effect catalogue:
 
 ```ts
-await light.setColor({ red: 255, green: 96, blue: 0 });
+await light.setColor?.({ red: 255, green: 96, blue: 0 });
 ```
 
 Each channel must be an integer from 0 through 255. Invalid values reject rather than being rounded or

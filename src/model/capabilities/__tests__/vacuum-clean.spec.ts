@@ -1403,7 +1403,7 @@ describe("ModeCtrl verbs — vocabulary declared, wire still unconfirmed", () =>
   });
 });
 
-describe("area-selecting ModeCtrl frames (Tier B — encoders only)", () => {
+describe("area-selecting ModeCtrl frames", () => {
   /** Walk into the Param sub-message of a built frame. */
   const paramOf = (value: string, field: number): readonly RawDpField[] => {
     const p = byteCodec.decode(value)?.find((f) => f.field === field);
@@ -1487,12 +1487,32 @@ describe("area-selecting ModeCtrl frames (Tier B — encoders only)", () => {
     expect(paramOf(encodeSelectRoomsClean(...rooms), 4).find((f) => f.field === 3)).toMatchObject({ value: 3n });
   });
 
-  it("installs no setter for any of them — these are encoders, not controls", () => {
-    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home", new Set([151])));
-    const a = acts as Record<string, unknown>;
-    for (const name of ["cleanRooms", "cleanZones", "startScene", "setCleanRooms"]) {
-      expect(a[name]).toBeUndefined();
+  it("installs a verb for each on an AIoT robot, and none on a Tuya one", () => {
+    const aiot = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home", new Set([151])));
+    const a = aiot.acts as Record<string, unknown>;
+    for (const name of ["startScene", "cleanRooms", "cleanZones"]) {
+      expect(typeof a[name]).toBe("function");
     }
+    // Never a bare property setter: the value each takes is not a stored property, so `setCleanRooms`
+    // would be a second spelling of the verb resolving through the flat schema, which has no such name.
+    expect(a["setCleanRooms"]).toBeUndefined();
+
+    // Same gate as every other mode-control verb — DP 152 belongs to the AIoT schema alone.
+    const tuya = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home_tuya", new Set([151])));
+    for (const name of ["startScene", "cleanRooms", "cleanZones"]) {
+      expect((tuya.acts as Record<string, unknown>)[name]).toBeUndefined();
+    }
+  });
+
+  it("sends a scene by the id its own read reports", () => {
+    // `scenes()` decodes SceneResponse off DP 180 and `VacuumScene.id` is what this verb takes, so a
+    // caller never has to invent one. The two halves meeting is the whole point of the pairing.
+    const { acts, sent } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx(undefined, "eufy_home", new Set([151])));
+    void (acts as { startScene: (id: number) => Promise<void> }).startScene(7);
+    const fields = byteCodec.decode(String((sent[0] as { value?: unknown }).value));
+    expect(fields?.find((f) => f.field === 1)).toMatchObject({ value: BigInt(ModeCtrlParamMethod.SCENE.method) });
+    const param = fields?.find((f) => f.field === ModeCtrlParamMethod.SCENE.param) as { value: Buffer };
+    expect(byteCodec.nested(param.value)).toEqual([{ field: 1, kind: "int", value: 7n }]);
   });
 });
 

@@ -169,39 +169,6 @@ export class StationUnreachableError extends Error {
 }
 
 /**
- * A live stream was refused: the station is already serving another of its cameras to a viewer.
- *
- * A station fans several cameras out over one session and serves ONE of them at a time. Accepting a second
- * live pull does not make it serve two: measured on a base carrying three attached cameras, each opened
- * stream took the station from the others in turn and all three received their media in bursts. So a second
- * viewer is refused rather than admitted and degraded, which is the difference between a caller being told
- * the constraint and a caller watching every picture stutter.
- *
- * Which camera deserves the station is the caller's decision, not the SDK's, so nothing is queued or
- * pre-empted here.
- *
- * A still is not refused: it yields the station instead, and answers with the retained image where one is
- * held. Only pulls that deliver continuous media contend for a viewer's place.
- */
-export class StationBusyError extends Error {
-  /** Always true: the station is busy now, and stops being busy when the other stream is released. */
-  readonly retryable = true;
-
-  constructor(
-    /** The channel the station is already serving. */
-    readonly servingChannel: number,
-    options?: { cause?: unknown },
-  ) {
-    super(
-      `the station is already serving channel ${servingChannel} to a viewer, and serves one camera at a ` +
-        `time — stop that stream before opening another`,
-      options,
-    );
-    this.name = "StationBusyError";
-  }
-}
-
-/**
  * How a live stream ended before its first video keyframe: the warm-up deadline elapsed, the source
  * reported an error, or the source ended on its own.
  */
@@ -817,8 +784,9 @@ export interface MediaProvider {
     /**
      * Present and `true` only when these bytes are the RETAINED still rather than a fresh capture.
      *
-     * A live still is refused while a sibling camera on the same station is being watched, because a
-     * station serves one camera at a time and the live view is the picture someone is looking at. Answering
+     * A live still is refused while a sibling camera on the same station is being watched, because one
+     * session serves one camera at a time, a still does not open a connection of its own, and the live view
+     * is the picture someone is looking at. Answering
      * the retained still there answers the call instead of failing it, and this says the bytes are not
      * current. Absent means freshly captured.
      */
@@ -827,18 +795,18 @@ export interface MediaProvider {
   /**
    * Open a managed live stream.
    *
-   * Several cameras behind one station may stream at the same time only where the station serves them at
-   * the same time. Where it serves one camera at a time, a second viewer is refused with
-   * {@link StationBusyError} rather than admitted and degraded: accepting it does not make the station
-   * serve two, it makes both stutter. Which camera deserves the station is the caller's decision, so
-   * nothing is queued or pre-empted. Each handle receives only the frames the station tagged for ITS
-   * camera.
+   * Several cameras behind one station stream at the same time, each over its own connection to it. One
+   * connection serves one camera — a station answers the most recent start on a session, so two cameras
+   * sharing one take it from each other in turn — so a camera asked for while its station is already
+   * serving another gets a connection of its own. Measured on a base carrying two attached cameras, one
+   * at 3840x2160: both held full frame rate at once. Each handle receives only the frames the station
+   * tagged for ITS camera.
    *
    * @example
    * ```ts
-   * const stream = await cam.live();
-   * stream.on("video", (frame) => write(frame.data)); // Annex-B
-   * stream.stop(); // detach this consumer
+   * const stream = await cam.live?.();
+   * stream?.on("video", (frame) => sink.write(frame.data)); // Annex-B
+   * stream?.stop(); // detach this consumer
    * ```
    */
   live(opts?: SharedSourceHints & AbortableCall & Record<string, unknown>): Promise<LiveStreamConsumer>;

@@ -243,8 +243,8 @@ describe("stored snapshot client lifecycle", () => {
 /**
  * A live still refused because a sibling is being watched answers with the retained one.
  *
- * A station serves one camera at a time and a live view outranks a tile, so the still is genuinely
- * unavailable rather than broken. Failing there empties a caller's tile; answering the retained bytes keeps
+ * One session serves one camera at a time, a still does not open a connection of its own, and a live view
+ * outranks a tile — so the still is genuinely unavailable rather than broken. Failing there empties a caller's tile; answering the retained bytes keeps
  * it populated, and `retained` says they are not current so nothing mistakes them for a fresh capture.
  */
 describe("a live still that could not be captured", () => {

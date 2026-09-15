@@ -4,6 +4,8 @@ Device events arrive from up to four transports (FCM **push**, **P2P frames**, c
 **MQTT**) and are normalized into one **typed semantic event** each — you listen without caring which
 transport delivered it. Event names autocomplete and payloads are typed:
 
+<!-- typecheck: host bus -->
+
 ```ts
 eufy.on("motion", (e) => console.log(e.deviceSn, e.thumbnailUrl));
 eufy.on("doorbellPress", (e) => …);
@@ -102,8 +104,8 @@ than before, over the LAN, with no cloud involved — and still exactly once per
 
 ## Detection level on a motion sensor
 
-A sensor's detection level is a step, not a number: `dev.motion()?.setSensitivityStep(n)`, read back as
-`dev.motion()?.sensitivityStep()`. Its five steps are detection distances — 3-5 m at the lowest up to
+A sensor's detection level is a step, not a number: `dev.motion?.()?.setSensitivityStep(n)`, read back as
+`dev.motion?.()?.sensitivityStep()`. Its five steps are detection distances — 3-5 m at the lowest up to
 9-11 m at the highest — and the value behind them counts DOWN as the sensor gets more sensitive, so a
 raw number would invite picking the wrong end. Cameras run their own scales, some rising and some
 falling, which is why a step is what crosses them all — see
@@ -118,7 +120,7 @@ A standalone PIR sensor is the exception to the paragraph above: outside the ven
 mode** it is never notified over P2P at all. Its detections reach you as a push, or as a last-event
 timestamp on the next cloud poll — there is no local path.
 
-`dev.motion()?.setTestMode(true)` opens one, and `dev.motion()?.testMode` reads back what the station
+`dev.motion?.()?.setTestMode(true)` opens one, and `dev.motion?.()?.testMode` reads back what the station
 reports. It is a diagnostic mode meant for aiming a sensor while installing it, not a transport — and
 **while it is on that sensor's detections do not raise the alarm**, so leaving it on quietly disarms
 it. Turn it back off. A sleeping sensor cannot enter it either: the station accepts the command while

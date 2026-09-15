@@ -11,7 +11,7 @@ import { FakeP2PSession, p2pAudioFrame, p2pVideoFrame } from "./live-source-fixt
  * tagged for another camera with none of its own, a stream concluded the station was tagging wrongly and took
  * every frame from then on.
  *
- * The hatch cannot be made safe here. A station serving one camera at a time keeps serving the previous one
+ * The hatch cannot be made safe here. One session serving one camera at a time keeps serving the previous one
  * while a new start is in flight, so a camera opened after another is routinely handed nothing but its
  * sibling's frames to begin with — and a stream that gave up then adopted that sibling's video and audio for
  * the rest of its life. Every attempt to qualify the condition left a hole: keying it on whether a sibling had

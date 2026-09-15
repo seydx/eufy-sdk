@@ -49,6 +49,16 @@ export async function openLiveStream(session: P2PSession, opts: LiveStreamOption
  * The header states the stream's geometry when the capture started, and a stream that reconfigures
  * mid-burst leaves it describing something the returned bytes contradict; the return value describes an
  * image, so the image is its source of truth.
+ *
+ * The consumer is detached the moment the collected run is complete, and the decode that follows holds no
+ * station: it works on bytes already in memory. One session serves one camera at a time and a still never
+ * opens a second one, so a still that kept its pull attached across its own decode would deny
+ * that station to every live request for the length of an FFmpeg run — measured on a real base as a live
+ * request refused 370ms after the still it was waiting on had already collected everything it needed.
+ *
+ * `signal` ends the collection itself, not only the wait for it, and rejects with the signal's own reason
+ * because the abandonment is the caller's fact and not a failure of the source. It reaches only the
+ * collection: past that the station is already free, so there is nothing left for it to release.
  */
 export async function captureSnapshotFromShared(
   source: SharedLiveSource,
@@ -56,6 +66,7 @@ export async function captureSnapshotFromShared(
     timeoutMs?: number;
     collectMs?: number;
     skipKeyframes?: number;
+    signal?: AbortSignal;
     logger?: Logger;
     ffmpegLevel?: FfmpegLevel;
     ffmpegPath?: string;
@@ -64,12 +75,14 @@ export async function captureSnapshotFromShared(
   const timeoutMs = opts.timeoutMs ?? 20000;
   const collectMs = opts.collectMs ?? 1500;
   const skip = opts.skipKeyframes ?? 1;
+  opts.signal?.throwIfAborted();
   const consumer = source.attach();
   // A primed consumer gets the cached IDR first — a single decodable keyframe: take it and decode at
   // once (no skip, no collect window). A cold consumer skips the (often partial) first IDR.
   const primed = consumer.primed;
+  let burst: { h264: Buffer; codec: VideoCodec; sets?: ParamSets };
   try {
-    const burst = await new Promise<{
+    burst = await new Promise<{
       h264: Buffer;
       codec: VideoCodec;
       sets?: ParamSets;
@@ -124,25 +137,31 @@ export async function captureSnapshotFromShared(
           new LiveSnapshotUnavailableError("source-failed", `source ended before a keyframe (state: ${source.state})`),
         );
       };
+      const onAbandoned = () => {
+        cleanup();
+        reject(opts.signal?.reason);
+      };
       const cleanup = () => {
         clearTimeout(timer);
         if (settle) clearTimeout(settle);
         consumer.off("video", onVideo);
         consumer.off("error", onError);
         consumer.off("stop", onStop);
+        opts.signal?.removeEventListener("abort", onAbandoned);
       };
       consumer.on("video", onVideo);
       consumer.on("error", onError);
       consumer.on("stop", onStop);
-    });
-    return await annexbToJpeg(primeForDecode(burst.h264, burst.sets, burst.codec), {
-      logger: opts.logger ?? noopLogger,
-      level: opts.ffmpegLevel,
-      executable: opts.ffmpegPath,
+      opts.signal?.addEventListener("abort", onAbandoned, { once: true });
     });
   } finally {
     consumer.detach();
   }
+  return annexbToJpeg(primeForDecode(burst.h264, burst.sets, burst.codec), {
+    logger: opts.logger ?? noopLogger,
+    level: opts.ffmpegLevel,
+    executable: opts.ffmpegPath,
+  });
 }
 
 /**

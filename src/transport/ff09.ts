@@ -642,17 +642,28 @@ export interface Ff09SettingsResponse {
 export function parseFf09SettingsResponse(plain: Buffer): Ff09SettingsResponse {
   if (plain.length < 1) throw new Error("ff09: settings response too short (missing status byte)");
   const status = plain[0]!;
+  const fields = walkFf09Tlv(plain, 1, plain.length);
+  return { status, fields };
+}
+
+/**
+ * Walk a bounded `tag|len|value` TLV region into a `tag → bytes` map. Stops at a `0x00` tag (only ever
+ * trailing zero-padding, never a real field — real tags start at `0xa1`) and refuses a field whose
+ * declared length would overrun `end`, so a corrupt length can't read past the region (e.g. into a
+ * trailing checksum). Shared by {@link parseFf09SettingsResponse} and the Solix param decoder.
+ */
+export function walkFf09Tlv(buf: Buffer, start: number, end: number): Map<number, Buffer> {
   const fields = new Map<number, Buffer>();
-  let i = 1;
-  while (i + 2 <= plain.length) {
-    const sep = plain[i]!;
-    if (sep === 0) break;
-    const len = plain[i + 1]!;
-    if (i + 2 + len > plain.length) break;
-    fields.set(sep, plain.subarray(i + 2, i + 2 + len));
+  let i = start;
+  while (i + 2 <= end) {
+    const tag = buf[i]!;
+    if (tag === 0) break;
+    const len = buf[i + 1]!;
+    if (i + 2 + len > end) break;
+    fields.set(tag, buf.subarray(i + 2, i + 2 + len));
     i += 2 + len;
   }
-  return { status, fields };
+  return fields;
 }
 
 /** Read a little-endian u16 out of a TLV field buffer (throws on a missing/short field — a caller-side bug, not a wire ambiguity). */

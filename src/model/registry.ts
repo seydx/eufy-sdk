@@ -54,6 +54,11 @@ export const MODEL_REGISTRY: Readonly<Record<string, RegistryEntry>> = {
   T8210: { codec: "camera", caps: ["doorbell", "battery"], name: "Video Doorbell" },
   // Confirmed against a real owned unit (named "Doorbell"): Video Doorbell Dual.
   T8214: { codec: "camera", caps: ["doorbell", "battery"], name: "Video Doorbell Dual" },
+  // Confirmed against a real owned unit: the mains-powered Wired Doorbell 2K. No `battery` row
+  // member on purpose — this model is wired, so the codec baseline plus inference is the whole
+  // truth for power. Without this row it classified as a plain camera, so the doorbell capability
+  // never appeared and consumers got no doorbell event entity or ring trigger.
+  T8200: { codec: "camera", caps: ["doorbell"], name: "Wired Doorbell 2K" },
 
   // Cameras observed on real owned hardware (inspect-device sweep). Names from the app's own
   // model-family constants (scripts/data/app_model_registry.json); caps mirror what the device

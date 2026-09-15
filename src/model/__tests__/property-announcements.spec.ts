@@ -17,8 +17,14 @@ import { describe, it, expect } from "vitest";
 import { Device, UNKNOWN_PARAM_PREFIX } from "../index.js";
 import type { CloudRecord } from "../index.js";
 
-/** A battery camera: reports its level (1101), its motion detection (1011) and its enablement (1035). */
-const camera: CloudRecord = { deviceType: 9, model: "T8410", params: { 1101: "50", 1011: "1", 1035: "0" } };
+/**
+ * A battery camera: reports its level (1101), its motion detection (1011) and its enablement (1035).
+ *
+ * A eufyCam, and the model matters: a mains camera reports 1101 as a sentinel, so the battery reads are
+ * withheld from its schema and there is no `battery` property for this file to announce. The fixture
+ * has to name hardware that actually has a cell.
+ */
+const camera: CloudRecord = { deviceType: 9, model: "T8114", params: { 1101: "50", 1011: "1", 1035: "0" } };
 
 /** Announce whatever applying `params` moved — the two calls the client makes, as one step. */
 const announce = (dev: Device, params: Record<number, string>) => dev.announcements(dev.applyParams(params));

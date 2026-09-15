@@ -1,4 +1,7 @@
 import { EventEmitter } from "node:events";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { captureSnapshotFromShared } from "../media.js";
 import { SharedLiveSource } from "../shared-live-source.js";
 import type { LiveStreamHandle, LiveVideoFrame } from "../../../core/contracts.js";
@@ -17,6 +20,8 @@ class FakeStream extends EventEmitter implements LiveStreamHandle {
     this.emit("video", f);
   }
 }
+
+const settle = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function frame(): LiveVideoFrame {
   // a bogus keyframe — enough to prime; the ffmpeg decode is expected to fail (unit env)
@@ -44,5 +49,63 @@ describe("captureSnapshotFromShared (V6 snapshot as consumer)", () => {
     expect(streams).toHaveLength(1); // ONE pull total — snapshot rode the warm source
     expect(source.consumerCount).toBe(1); // only the original watcher remains
     watcher.detach();
+  });
+
+  it("detaches an abandoned capture at once instead of holding the channel to its timeout", async () => {
+    const source = new SharedLiveSource({ makeStream: () => new FakeStream() });
+    const abandonment = new AbortController();
+    const capture = captureSnapshotFromShared(source, { timeoutMs: 60_000, signal: abandonment.signal });
+    expect(source.consumerCount).toBe(1);
+
+    const reason = new Error("a live view took the station");
+    abandonment.abort(reason);
+
+    await expect(capture).rejects.toBe(reason);
+    expect(source.consumerCount).toBe(0);
+  });
+
+  /**
+   * The station is free before the decode, not after it.
+   *
+   * A decode works on bytes already collected, so a still that kept its pull attached across it would hold a
+   * session that serves one camera at a time — and a still never opens one of its own — for the length of an
+   * FFmpeg run — which is a live request refused
+   * for a still that had already taken everything it needed.
+   */
+  it("releases the station as soon as it has collected, without waiting for the decode", async () => {
+    const decoder = mkdtempSync(join(tmpdir(), "eufy-sdk-slow-decoder-"));
+    const executable = join(decoder, "decoder");
+    writeFileSync(executable, "#!/bin/sh\nsleep 1\nexit 1\n", { mode: 0o755 });
+    const streams: FakeStream[] = [];
+    const source = new SharedLiveSource({
+      makeStream: () => {
+        const s = new FakeStream();
+        streams.push(s);
+        return s;
+      },
+    });
+    const watcher = source.attach();
+    streams[0].video(frame());
+    const held = source.consumerCount;
+
+    const capture = captureSnapshotFromShared(source, { timeoutMs: 1000, ffmpegPath: executable });
+    expect(source.consumerCount).toBe(held + 1);
+    await settle(300);
+
+    expect(source.consumerCount, "the station is free while the decode is still running").toBe(held);
+    await expect(capture).rejects.toBeInstanceOf(Error);
+    watcher.detach();
+    rmSync(decoder, { force: true, recursive: true });
+  });
+
+  it("attaches nothing for a capture already abandoned before it starts", async () => {
+    const source = new SharedLiveSource({ makeStream: () => new FakeStream() });
+    const abandonment = new AbortController();
+    abandonment.abort(new Error("a live view took the station"));
+
+    await expect(captureSnapshotFromShared(source, { signal: abandonment.signal })).rejects.toThrow(
+      "a live view took the station",
+    );
+    expect(source.consumerCount).toBe(0);
   });
 });

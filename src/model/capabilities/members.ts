@@ -674,9 +674,12 @@ export function memberWrite(
  *
  * Three declarations can state it, checked in narrowing order. A member's own {@link ValueMember.args}
  * wins, because the only reason to state an argument's `values` beside an `enumValues` that already
- * publishes the read's set is that the two DIFFER: `arming` reports eight guard modes and can set only the
- * three whose wire was captured. Then {@link ValueMember.decodedValues}, for a getter whose set the
- * property schema cannot express, and last the schema's own `enumValues`.
+ * publishes the read's set is that the two DIFFER — a device that REPORTS a value it will not accept back.
+ * Then {@link ValueMember.decodedValues}, for a getter whose set the property schema cannot express, and
+ * last the schema's own `enumValues`.
+ *
+ * No member states one today. `arming` was the last, while five of the nine guard modes it reports had no
+ * captured write; the fallback is what every member uses, and a stated `values` is the exception.
  *
  * One source for all three consumers — the check, the generated refusal, and the argument a caller is
  * offered — so a caller is never shown a value it will then be refused for sending.

@@ -43,6 +43,8 @@ withdraws it.
 The caller that enables publication therefore owns its lifetime. Pair `publish()` with `withdraw()`
 when the recorder no longer needs the endpoint:
 
+<!-- typecheck: host runRecorder -->
+
 ```ts
 await rtsp?.publish();
 try {

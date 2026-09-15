@@ -401,8 +401,8 @@ describe("LiveStream channel isolation on a HomeBase", () => {
    * The filter never gives up, however long a station serves another camera instead of this one.
    *
    * It used to, after a bounded run of foreign frames, on the theory that such a station tags differently and
-   * the stream would otherwise deliver nothing. On a station serving one camera at a time that run is what an
-   * ordinary handover produces, so the stream adopted its sibling's picture for the rest of its life. A stream
+   * the stream would otherwise deliver nothing. Over one session serving one camera at a time that run is what
+   * an ordinary handover produces, so the stream adopted its sibling's picture for the rest of its life. A stream
    * receiving none of its own media instead hits the warm-up deadline and reports a typed start failure, which
    * is the same information without ever showing the wrong camera.
    */
@@ -451,9 +451,10 @@ describe("LiveStream keepalive default", () => {
   });
 
   /**
-   * On an attached camera the nudge is not a ping — it re-sends the full media start, which on a station that
-   * serves one camera at a time re-asserts this camera's channel against whatever else is warm. Measured on a
-   * real base, two attached streams each restarted every 3 s and fought for the station continuously.
+   * On an attached camera the nudge is not a ping — it re-sends the full media start, which over one session
+   * serving one camera at a time re-asserts this camera's channel against whatever else is warm on it.
+   * Measured on a real base, two attached streams sharing one session each restarted every 3 s and fought for
+   * it continuously.
    *
    * Once the station has delivered a frame of this camera's own channel it has proven it is serving this one,
    * so re-asserting buys nothing and costs the contention. The SDK's own measurement agrees the nudge is

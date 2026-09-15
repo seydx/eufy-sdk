@@ -1710,3 +1710,49 @@ export const CLEAN_PARAMS: Record<number, ParamDef> = {
     provenance: "mega",
   },
 };
+
+/**
+ * eufy Smart Display (T87Ax) param space — ids 8001-8006.
+ *
+ * Its own table rather than a corner of {@link SECURITY_PARAMS}: nothing in the 8000s carries a security
+ * meaning, so reading these ids there would decode a future security param assigned in this range as
+ * whatever it means on a camera.
+ *
+ * Every id here was reported by a live T87A0 (captured 2026-09-04). That the device SENT an id is what
+ * earns it a place in this table; the provenance label beside each one rates something narrower — how far
+ * its NAME is trusted. `modelName` and `modelCode` are `mega`, their values matching what the cloud
+ * record already carried. `battery` is `verified`: the id is real and the reading consistent, but the
+ * name came from the maintainer's own knowledge of the hardware rather than from the cloud data-point
+ * list, and `"100"` fits brightness, volume or charge equally.
+ *
+ * A dictionary entry is what makes a param readable by name off `getProperties()`. `capabilities/display.ts`
+ * decides separately which of them reach the typed surface, and only `battery` does.
+ *
+ * **8002 (`"1"`) and 8004 (a serial-shaped string) are absent, deliberately.** Neither meaning is
+ * legible from one value: `1` fits any enum or flag, and a serial could be the display's own or the
+ * station's it is bound to. They arrive as `unknown_8002` / `unknown_8004`, which is the measure of this
+ * list: it holds what is unknown, not what is unknowable. What would settle them: the vendor app's own
+ * display settings screen, one control at a time, params diffed after each.
+ */
+export const DISPLAY_PARAMS: Record<number, ParamDef> = {
+  8001: {
+    name: "battery",
+    type: "number",
+    provenance: "verified",
+  },
+  8003: {
+    name: "softwareVersion",
+    type: "string",
+    provenance: "guessed",
+  },
+  8005: {
+    name: "modelName",
+    type: "string",
+    provenance: "mega",
+  },
+  8006: {
+    name: "modelCode",
+    type: "string",
+    provenance: "mega",
+  },
+};

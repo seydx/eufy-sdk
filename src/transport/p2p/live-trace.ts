@@ -129,7 +129,19 @@ export type LiveTrace =
    * The station answers every PING with a PONG, so silence past several heartbeats is the path being gone.
    * Stated only where a pong arrived: a station that has never answered says nothing by not answering now.
    */
-  | { phase: "path-stale"; silentMs: number };
+  | { phase: "path-stale"; silentMs: number }
+  /**
+   * A stream received nothing on its own channel for the stall window, and what was done about it.
+   *
+   * A station that switches to a sibling leaves the stream it was serving with no frames, no error and no
+   * stop, so this silence is the only statement that it happened. `reasserted` re-issued the media start,
+   * which is the repair; `declined` left the channel alone because nothing is attached to this pull and
+   * taking the station back would take it from a camera someone is watching.
+   *
+   * Media still arriving means this never fires, so a picture that stopped advancing while this is silent
+   * stopped for a reason upstream of the station's attention.
+   */
+  | { phase: "channel-silent"; silentMs: number; outcome: "reasserted" | "declined" };
 
 /**
  * Record one startup observation at debug level.
