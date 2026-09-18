@@ -2,14 +2,14 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { decode as jpegDecode } from "jpeg-js";
-import { autoContrast, decodeImageV2, isV2Image } from "../decodeImageV2.js";
+import { decodeImageV2, isV2Image } from "../decodeImageV2.js";
 import { normalizePushImage } from "../decodeImageV1.js";
 
-/** Both fixtures are FULLY SYNTHETIC (no captured device data / real serials). Regenerate with `scripts/dev/gen_v2_fixture.py <w> <h> <out.b64>`. */
+/** Every fixture is FULLY SYNTHETIC (no captured device data / real serials). Regenerate with `scripts/dev/gen_v2_fixture.py <w> <h> <out.b64> [quality] [subsampling]`. */
 const FIXTURE_DIR = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
 const readFixture = (name: string) => Buffer.from(readFileSync(join(FIXTURE_DIR, name), "utf-8"), "base64");
 const v2Blob = readFixture("v2_thumbnail_176x144.b64");
-/** Synthetic non-ladder geometry (264×200 is not on the search's coarse ladder). */
+/** Synthetic non-ladder geometry (264×200 was never a rung on the old coarse ladder). */
 const v2Blob264 = readFixture("v2_thumbnail_264x200.b64");
 
 /** Read a baseline JPEG's SOF0 dimensions, to check the reconstructed geometry. */
@@ -18,11 +18,32 @@ function jpegSize(jpeg: Buffer): { width: number; height: number } {
   return { height: (jpeg[sof + 5] << 8) | jpeg[sof + 6], width: (jpeg[sof + 7] << 8) | jpeg[sof + 8] };
 }
 
-/** Sum of one RGBA channel over `count` pixels. */
-function channelSum(data: Uint8Array, channel: number, count: number): number {
-  let sum = 0;
-  for (let i = 0; i < count; i++) sum += data[i * 4 + channel];
-  return sum;
+/** Per-channel range and mean of a decoded RGBA image. */
+function channels(img: { width: number; height: number; data: Uint8Array }) {
+  const n = img.width * img.height;
+  return [0, 1, 2].map((channel) => {
+    let min = 255;
+    let max = 0;
+    let sum = 0;
+    for (let i = 0; i < n; i++) {
+      const v = img.data[i * 4 + channel]!;
+      min = Math.min(min, v);
+      max = Math.max(max, v);
+      sum += v;
+    }
+    return { min, max, mean: sum / n };
+  });
+}
+
+/**
+ * The picture the fixture was built from.
+ *
+ * A synthetic fixture's head is a PLAIN baseline JPEG (the generator does not obfuscate it), so the
+ * original image is right there to compare a reconstruction against — which is a stronger statement
+ * than a pinned number: the reconstruction is not merely stable, it reproduces the source.
+ */
+function original(blob: Buffer) {
+  return jpegDecode(blob.subarray(blob.indexOf(Buffer.from([0xff, 0xd8]))), { useTArray: true });
 }
 
 describe("decodeImageV2 (keyless v2_eufysecurity)", () => {
@@ -48,8 +69,26 @@ describe("decodeImageV2 (keyless v2_eufysecurity)", () => {
     expect(jpegSize(jpeg!)).toEqual({ width: 264, height: 200 });
   });
 
+  it("recovers 4:2:0 chroma subsampling, whose MCU is 16×16 rather than 8×8", () => {
+    const jpeg = decodeImageV2(readFixture("v2_thumbnail_320x240_420.b64"));
+    expect(jpeg).not.toBeNull();
+    expect(jpegSize(jpeg!)).toEqual({ width: 320, height: 240 });
+    // 0x22 luma sampling factors in the reconstructed SOF0 — a 4:4:4 header would read 0x11 and the
+    // picture would be scrambled rather than merely mis-sized.
+    const sof = jpeg!.indexOf(Buffer.from([0xff, 0xc0]));
+    expect(jpeg![sof + 11]).toBe(0x22);
+  });
+
   it("returns null for a non-v2 blob", () => {
     expect(decodeImageV2(Buffer.from("not a v2 image"))).toBeNull();
+  });
+
+  it("returns null when the plaintext tail is not there to splice onto", () => {
+    expect(decodeImageV2(Buffer.from("v2_eufysecurity:T8000TEST00000002:0000000000:no jpeg here"))).toBeNull();
+  });
+
+  it("returns null rather than a scrambled picture when the scan is truncated mid-MCU", () => {
+    expect(decodeImageV2(v2Blob.subarray(0, v2Blob.length - 400))).toBeNull();
   });
 
   it("normalizePushImage routes a v2 blob through the decoder", () => {
@@ -64,82 +103,59 @@ describe("decodeImageV2 (keyless v2_eufysecurity)", () => {
   });
 });
 
-describe("decodeImageV2 end-to-end de-fog (full decode → re-encode path)", () => {
-  const cases = [
-    { file: "v2_thumbnail_176x144.b64", width: 176, height: 144, means: [126.45, 128.36, 127.3] },
-    { file: "v2_thumbnail_264x200.b64", width: 264, height: 200, means: [147.2, 124.59, 125.06] },
-  ];
-  for (const { file, width, height, means } of cases) {
-    it(`stretches ${file} to full dynamic range through encode+decode`, () => {
-      const out = decodeImageV2(readFixture(file));
+describe("decodeImageV2 reproduces the source picture", () => {
+  for (const { file, width, height } of [
+    { file: "v2_thumbnail_176x144.b64", width: 176, height: 144 },
+    { file: "v2_thumbnail_264x200.b64", width: 264, height: 200 },
+    { file: "v2_thumbnail_320x240_420.b64", width: 320, height: 240 },
+  ]) {
+    it(`matches the original image's tones for ${file}`, () => {
+      const blob = readFixture(file);
+      const out = decodeImageV2(blob);
       expect(out).not.toBeNull();
-      const img = jpegDecode(out!, { useTArray: true });
-      expect({ width: img.width, height: img.height }).toEqual({ width, height });
-      const n = width * height;
-      for (let c = 0; c < 3; c++) {
-        let min = 255;
-        let max = 0;
-        let sum = 0;
-        for (let i = 0; i < n; i++) {
-          const v = img.data[i * 4 + c];
-          min = Math.min(min, v);
-          max = Math.max(max, v);
-          sum += v;
-        }
-        expect(min).toBeLessThanOrEqual(2);
-        expect(max).toBeGreaterThanOrEqual(253);
-        expect(sum / n).toBeCloseTo(means[c], 0);
+      const got = jpegDecode(out!, { useTArray: true });
+      expect({ width: got.width, height: got.height }).toEqual({ width, height });
+
+      // Within a point of the source on every channel: the scan is the camera's own, so the only thing
+      // a reconstruction can get wrong is the tables it reads that scan through.
+      const before = channels(original(blob));
+      const after = channels(got);
+      for (let channel = 0; channel < 3; channel++) {
+        expect(after[channel]!.mean).toBeCloseTo(before[channel]!.mean, 0);
+        expect(after[channel]!.min).toBeLessThanOrEqual(8);
+        expect(after[channel]!.max).toBeGreaterThanOrEqual(247);
       }
     });
   }
 });
 
-describe("autoContrast (PIL ImageOps.autocontrast parity, cutoff 0.5%)", () => {
-  const W = 20;
-  const H = 20;
-  const N = W * H;
+describe("decodeImageV2 contrast recovery (the lost quant tables)", () => {
+  /**
+   * The camera's quant tables go with the encrypted head, so the reconstruction reads the scan through
+   * substitute tables — and a thumbnail encoded well below their quality decodes washed out ("foggy").
+   * This fixture is quality 30 against a reference table of 85: spliced as-is it spans about 103..152
+   * of the 0..255 range. The decoder measures that and rewrites the DQT, which is a contrast correction
+   * that costs a header rather than a re-encoded picture.
+   */
+  it("opens a low-quality thumbnail back up to the source's range", () => {
+    const blob = readFixture("v2_thumbnail_176x144_q30.b64");
+    const out = decodeImageV2(blob);
+    expect(out).not.toBeNull();
 
-  function buildInput(): Uint8Array {
-    const data = new Uint8Array(N * 4);
-    for (let i = 0; i < N; i++) {
-      data[i * 4 + 0] = 40 + (i % 41);
-      data[i * 4 + 1] = 100 + ((i * 7) % 30);
-      data[i * 4 + 2] = (i * 13) % 200;
-      data[i * 4 + 3] = 255;
-    }
-    data[0] = 5;
-    data[4] = 250;
-    data[1] = 2;
-    data[5] = 254;
-    data[2] = 1;
-    data[6] = 255;
-    return data;
-  }
-
-  it("matches PIL's per-channel output statistics exactly", () => {
-    const data = buildInput();
-    autoContrast(data, W, H);
-    expect(channelSum(data, 0, N)).toBe(50090);
-    expect(channelSum(data, 1, N)).toBe(50907);
-    expect(channelSum(data, 2, N)).toBe(50788);
-    for (let c = 0; c < 3; c++) {
-      let min = 255;
-      let max = 0;
-      for (let i = 0; i < N; i++) {
-        min = Math.min(min, data[i * 4 + c]);
-        max = Math.max(max, data[i * 4 + c]);
-      }
-      expect(min).toBe(0);
-      expect(max).toBe(255);
+    const before = channels(original(blob));
+    const after = channels(jpegDecode(out!, { useTArray: true }));
+    for (let channel = 0; channel < 3; channel++) {
+      expect(after[channel]!.max - after[channel]!.min).toBeGreaterThan(240);
+      // Within two points of the source's mean. Not to the decimal: the recovered stretch names a
+      // quality (31 for this fixture's 30), and the tables at that quality are not the camera's own.
+      expect(Math.abs(after[channel]!.mean - before[channel]!.mean)).toBeLessThan(2);
     }
   });
 
-  it("matches PIL at specific pixels (int-truncation, not rounding)", () => {
-    const data = buildInput();
-    autoContrast(data, W, H);
-    const px = (i: number) => [data[i * 4], data[i * 4 + 1], data[i * 4 + 2]];
-    expect(px(0)).toEqual([0, 0, 0]);
-    expect(px(10)).toEqual([63, 87, 166]);
-    expect(px(199)).toEqual([223, 114, 239]);
+  it("leaves a thumbnail that already spans the range alone", () => {
+    const jpeg = decodeImageV2(v2Blob)!;
+    // Quality 85 tables, unmodified: the DQT is the reference one, not a stretched one.
+    const dqt = jpeg.indexOf(Buffer.from([0xff, 0xdb]));
+    expect(jpeg[dqt + 5]).toBe(5); // Annex-K luma DC (16) scaled to quality 85
   });
 });

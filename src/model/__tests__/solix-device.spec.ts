@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { SolixDevice, discoverSolixDevices, type SolixDeviceRecord } from "../solix-device.js";
+import { SolixDevice, discoverSolixDevices, solarbankSceneReadings, type SolixDeviceRecord } from "../solix-device.js";
 import { buildModelIndex, type SolixProductCategory } from "../solix-catalog.js";
 
 const CATALOG: SolixProductCategory[] = [
@@ -13,6 +13,8 @@ const CATALOG: SolixProductCategory[] = [
     name: "Portable Power Station",
     products: [{ product_code: "A1782", name: "SOLIX F3000", p_codes: ["2301", { product_code: "2302" }] }],
   },
+  // NOTE the trailing space in the category name — the live catalog returns it that way.
+  { name: "Plug-in Home Battery ", products: [{ product_code: "AE103", name: "Solarbank 4 E5000 Pro" }] },
 ];
 
 const METER: SolixDeviceRecord = {
@@ -67,6 +69,19 @@ describe("SolixDevice", () => {
     expect(d.telemetry().channel_a8).toBe(0);
   });
 
+  it("evidence-gates a promoted field (meterCurrentL1 on 0xAF) and keeps reserved 0xB2 raw-only", () => {
+    const d = new SolixDevice(METER, { catalog: CATALOG });
+    expect("meterCurrentL1" in d.energyMeter()!).toBe(false); // no frame yet
+    d.applyReading({
+      deviceSn: METER.device_sn,
+      values: { meterCurrentL1: 1.79, channel_af: 1.79, channel_b2: 0.007 },
+    });
+    expect(d.energyMeter()!.meterCurrentL1).toBeCloseTo(1.79, 2);
+    // 0xB2 names no field: readable raw via telemetry(), never a member or a "meterCurrentTotal".
+    expect(d.telemetry().channel_b2).toBeCloseTo(0.007, 3);
+    expect("meterCurrentTotal" in d.energyMeter()!).toBe(false);
+  });
+
   it("a meter handle reflects later readings live (the getter reads state, not a snapshot)", () => {
     const d = new SolixDevice(METER, { catalog: CATALOG });
     d.applyReading({ deviceSn: METER.device_sn, values: { meterVoltageL1: 236.8, channel_ac: 236.8 } });
@@ -114,12 +129,64 @@ describe("SolixDevice", () => {
     expect(sb.energyMeter()).toBeUndefined();
   });
 
+  it("resolves a Solarbank from its 'Plug-in Home Battery ' catalog category (trailing space trimmed)", () => {
+    const sb = new SolixDevice({ device_sn: "AE103EXAMPLE00001", product_code: "AE103" }, { catalog: CATALOG });
+    // Category is trimmed at ingest (buildModelIndex), so consumers see the clean name, not "…Battery ".
+    expect(sb.identity().category).toBe("Plug-in Home Battery");
+    expect(sb.has("battery")).toBe(true);
+    expect(sb.has("solarInput")).toBe(true);
+    expect(sb.has("acOutput")).toBe(true);
+    // NOT energyMeter: the AE1X0 meter's members are its own ff09 tag family, not a Solarbank's.
+    expect(sb.has("energyMeter")).toBe(false);
+  });
+
+  it("detects a newer Solarbank (AE10x) by product code even without a catalog", () => {
+    const sb = new SolixDevice({ device_sn: "AE103EXAMPLE00002", product_code: "AE103" });
+    expect(sb.has("battery")).toBe(true);
+    expect(sb.has("solarInput")).toBe(true);
+    expect(sb.has("energyMeter")).toBe(false);
+  });
+
   it("buildModelIndex resolves model codes and their variant codes to name + category", () => {
     const index = buildModelIndex(CATALOG);
     expect(index.get("A1782")).toEqual({ name: "SOLIX F3000", category: "Portable Power Station" });
     // both the string and object variant codes resolve to the parent product
     expect(index.get("2301")?.name).toBe("SOLIX F3000");
     expect(index.get("2302")?.name).toBe("SOLIX F3000");
+  });
+
+  it("solarbankSceneReadings extracts batteryTemperature + batterySoc (string-typed) per device", () => {
+    const scene = {
+      solarbank_info: {
+        solarbank_list: [{ device_sn: "AE103EXAMPLE00001", device_pn: "AE103", bat_temperature: "31", bat_soc: "89" }],
+      },
+    };
+    const readings = solarbankSceneReadings(scene);
+    expect(readings).toEqual([{ deviceSn: "AE103EXAMPLE00001", values: { batteryTemperature: 31, batterySoc: 89 } }]);
+    // The reading is shaped like a SolixMqtt event, so it feeds straight into applyReading.
+    const dev = new SolixDevice({ device_sn: "AE103EXAMPLE00001", product_code: "AE103" });
+    dev.applyReading(readings[0]);
+    expect(dev.telemetry().batteryTemperature).toBe(31);
+  });
+
+  it("solarbankSceneReadings drops entries with no usable value (never clobbers live data)", () => {
+    const scene = {
+      solarbank_info: {
+        solarbank_list: [
+          { device_sn: "AE103EXAMPLE00001", bat_temperature: "", bat_soc: "" }, // empty strings during a gap
+          { bat_temperature: "30" }, // no device_sn
+        ],
+      },
+    };
+    expect(solarbankSceneReadings(scene)).toEqual([]);
+    expect(solarbankSceneReadings({})).toEqual([]);
+  });
+
+  it("buildModelIndex trims the category at ingest (the live catalog has trailing whitespace)", () => {
+    // The AE103 entry's category in CATALOG is "Plug-in Home Battery " (trailing space, as the live
+    // product_categories endpoint returns it); the index stores the trimmed name so every consumer of
+    // it — identity().category and detectSolixCapabilities — matches on the clean string.
+    expect(buildModelIndex(CATALOG).get("AE103")?.category).toBe("Plug-in Home Battery");
   });
 
   it("discoverSolixDevices composes a wire client's reads into resolved SolixDevice models", async () => {

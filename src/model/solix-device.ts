@@ -19,7 +19,8 @@ import {
   type SolixEnergyMeterReads,
 } from "./capabilities/solix.js";
 import { buildModelIndex } from "./solix-catalog.js";
-import type { SolixDeviceRecord, SolixProductCategory } from "../core/solix-types.js";
+import { solixProductFamily, type SolixProductFamily } from "./solix-family.js";
+import type { SolixDeviceRecord, SolixProductCategory, SolixSiteScene } from "../core/solix-types.js";
 
 /**
  * The device record shape, re-exported from the model surface. It lives in `core/solix-types` so the
@@ -34,6 +35,11 @@ export interface SolixIdentity {
   name: string;
   /** Anker catalog category (e.g. "Accessory", "Portable Power Station"), if resolvable. */
   category?: string;
+  /**
+   * Normalized product family — the "what kind of thing is this" answer (power station, Solarbank,
+   * smart meter, …), decorrelated from the marketing `category` string. See {@link SolixDevice.family}.
+   */
+  family: SolixProductFamily;
 }
 export interface SolixConnectivity {
   online: boolean;
@@ -80,8 +86,18 @@ export class SolixDevice {
       productCode: record.product_code,
       name: label?.name ?? record.alias_name ?? record.device_name ?? record.product_code,
       category: label?.category,
+      family: solixProductFamily({ product_code: record.product_code, category: label?.category }),
     };
     this.caps = detectSolixCapabilities(record, this.identity_.category);
+  }
+
+  /**
+   * The device's {@link SolixProductFamily} — the classification a caller branches on to SORT devices
+   * (a site's power stations vs its meters), the Solix analogue of eufy's `isHomeBase()`. Distinct from
+   * {@link has}, which answers what the device can DO; family answers what KIND of device it is.
+   */
+  get family(): SolixProductFamily {
+    return this.identity_.family;
   }
 
   /** All capabilities this device carries. */
@@ -176,6 +192,19 @@ export interface SolixDeviceReader {
 }
 
 /**
+ * Resolve the product catalog for a discovery: a caller-supplied `opts.catalog` short-circuits the wire
+ * read, and a failed `getProductCatalog()` degrades to no categories (names/families just go unresolved,
+ * never a thrown discovery). Shared by {@link discoverSolixDevices} and `discoverSolixSites` so that
+ * "a failed catalog is non-fatal" decision lives in exactly one place.
+ */
+export function resolveSolixCatalog(
+  client: SolixDeviceReader,
+  opts: { catalog?: SolixProductCategory[] },
+): Promise<SolixProductCategory[]> {
+  return opts.catalog ? Promise.resolve(opts.catalog) : client.getProductCatalog().catch(() => []);
+}
+
+/**
  * Discover an account's Solix devices as capability-driven {@link SolixDevice} objects — the wire+model
  * composition (a transport read + the product catalog) that used to be `SolixClient.discoverDevices()`.
  * It lives in the model layer because it builds `SolixDevice`; the wire client (now `transport/http`)
@@ -186,9 +215,41 @@ export async function discoverSolixDevices(
   client: SolixDeviceReader,
   opts: { catalog?: SolixProductCategory[] } = {},
 ): Promise<SolixDevice[]> {
-  const [records, catalog] = await Promise.all([
-    client.getDevices(),
-    opts.catalog ? Promise.resolve(opts.catalog) : client.getProductCatalog().catch(() => [] as SolixProductCategory[]),
-  ]);
+  const [records, catalog] = await Promise.all([client.getDevices(), resolveSolixCatalog(client, opts)]);
   return records.map((r) => new SolixDevice(r, { catalog }));
+}
+
+/** Coerce a scene field (string-on-the-wire) to a finite number, or `undefined`. */
+function sceneNum(v: unknown): number | undefined {
+  if (typeof v === "number") return Number.isFinite(v) ? v : undefined;
+  if (typeof v === "string" && v.trim() !== "") {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Reduce a site "scene" snapshot to per-device telemetry readings — the BACKSTOP counterpart to the
+ * realtime `ff09` decode. It emits only the fields the scene reliably carries that the fast MQTT frame
+ * does NOT: `batteryTemperature` (the realtime frame's BMS blob is empty, so `solixReadings` withholds
+ * it) and `batterySoc` (a cross-check/seed for the `0xa3` SOC). Each reading is shaped exactly like a
+ * `SolixMqtt` `reading` event — `{ deviceSn, values }` — so a caller can feed it straight into
+ * {@link SolixDevice.applyReading} and broadcast it on the same path as a live frame. Entries with no
+ * usable value are dropped, so a poll during a gap emits nothing rather than clobbering live values.
+ */
+export function solarbankSceneReadings(scene: SolixSiteScene): { deviceSn: string; values: Record<string, number> }[] {
+  const list = scene.solarbank_info?.solarbank_list ?? [];
+  const out: { deviceSn: string; values: Record<string, number> }[] = [];
+  for (const sb of list) {
+    const deviceSn = typeof sb.device_sn === "string" ? sb.device_sn : undefined;
+    if (!deviceSn) continue;
+    const values: Record<string, number> = {};
+    const temp = sceneNum(sb.bat_temperature);
+    if (temp !== undefined) values.batteryTemperature = temp;
+    const soc = sceneNum(sb.bat_soc);
+    if (soc !== undefined) values.batterySoc = soc;
+    if (Object.keys(values).length > 0) out.push({ deviceSn, values });
+  }
+  return out;
 }

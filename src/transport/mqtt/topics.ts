@@ -143,19 +143,34 @@ export function parseSecureTopic(topic: string): ParsedTopic | undefined {
 
 /** The per-device Solix topics for `{appName, productCode, deviceSn}`. */
 export interface SolixDeviceTopics {
-  /** Telemetry the device pushes (SUBSCRIBE) — ff09 `param_info` frames. */
+  /** Telemetry the device pushes (SUBSCRIBE) — ff09 `param_info` frames (live measurements). */
   paramInfo: string;
+  /**
+   * Settings/state the device pushes (SUBSCRIBE) — ff09 `state_info` frames. Same ff09 framing as
+   * `param_info` but the TAGS carry SETTINGS/targets (mode export limit, SOC limits, max_load, toggles),
+   * NOT live measurements — so it needs its own tag→name table, not the param_info one.
+   */
+  stateInfo: string;
   /** This device's command replies (SUBSCRIBE). */
   cmdRes: string;
-  /** The device's requestDeviceInfo channel (PUBLISH only — the app arms reporting here). */
+  /**
+   * The device's requestDeviceInfo channel (cmd 17). PUBLISH to arm reporting; also SUBSCRIBE — the
+   * broker copies the APP's publishes here to any co-subscriber, which is the only way to observe a
+   * control the app changed that `param_info` does not reflect (ambient light, display timeout).
+   */
   req: string;
 }
 
-/** Build the per-device Solix topics. `param_info` is the telemetry we decode; `req` is publish-only. */
+/** Build the per-device Solix topics. `param_info` is the telemetry we decode; `req` is arm + read-back. */
 export function solixDeviceTopics(appName: string, productCode: string, deviceSn: string): SolixDeviceTopics {
   const dt = `dt/${appName}/${productCode}/${deviceSn}`;
   const cmd = `cmd/${appName}/${productCode}/${deviceSn}`;
-  return { paramInfo: `${dt}/param_info`, cmdRes: `${cmd}/app/res`, req: `${cmd}/req` };
+  return {
+    paramInfo: `${dt}/param_info`,
+    stateInfo: `${dt}/state_info`,
+    cmdRes: `${cmd}/app/res`,
+    req: `${cmd}/req`,
+  };
 }
 
 /** The per-account Solix topics keyed by `user_id`. */

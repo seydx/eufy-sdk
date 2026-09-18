@@ -8,15 +8,30 @@ import { propertiesOf } from "../members.js";
  * wire, and category/prefix detection for the rest. These lock the members-derived schema and detection.
  */
 describe("Solix capability surface", () => {
-  it("the energyMeter schema derives from its members table: only the confirmed meterVoltageL1 (0xAC)", () => {
+  it("the energyMeter schema derives from its members table: the ten electrical fields, not the energy counters", () => {
     const props = propertiesOf(SOLIX_ENERGY_METER_MEMBERS);
-    expect(props).toHaveLength(1);
-    const v = props[0];
-    expect(v.name).toBe("meterVoltageL1");
-    expect(v.paramType).toBe(0xac);
-    expect(v.type).toBe("number");
-    expect(v.provenance).toBe("verified");
-    expect(v.writable).toBe(false);
+    const names = props.map((p) => p.name).sort();
+    expect(names).toEqual([
+      "meterCurrentL1",
+      "meterCurrentL2",
+      "meterCurrentL3",
+      "meterPowerL1",
+      "meterPowerL2",
+      "meterPowerL3",
+      "meterPowerTotal",
+      "meterVoltageL1",
+      "meterVoltageL2",
+      "meterVoltageL3",
+    ]);
+    // Energy counters are named on the wire (SOLIX_METER_FIELD_NAMES) but NOT members — unit scale
+    // unconfirmed. And there is no "meterCurrentTotal": the app names no such field.
+    expect(names).not.toContain("meterImportEnergy");
+    expect(names).not.toContain("meterCurrentTotal");
+    const v1 = props.find((p) => p.name === "meterVoltageL1")!;
+    expect(v1.paramType).toBe(0xac);
+    expect(v1.type).toBe("number");
+    expect(v1.provenance).toBe("verified");
+    expect(v1.writable).toBe(false);
   });
 
   it("detects capabilities from catalog category + product-code prefix (identity always present)", () => {

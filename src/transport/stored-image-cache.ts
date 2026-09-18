@@ -1,7 +1,19 @@
 import { StoredSnapshotUnavailableError, type StoredSnapshotUnavailableReason } from "../core/contracts.js";
 import type { Logger } from "../core/logger.js";
+import { MEDIA_FAILURE_REASONS, type MediaFailureReason } from "./media-failure.js";
 
 const MAX_JPEG_BYTES = 10 * 1024 * 1024;
+
+/**
+ * How many candidate URLs per device are remembered as already attempted.
+ *
+ * The set exists so the same thumbnail is not downloaded twice — one event arrives as several pushes
+ * (motion, then a person, then a face) carrying one URL between them. That is a question about the last
+ * few seconds, so a bounded window answers it exactly as well as an unbounded one, and unbounded is a
+ * leak: a signed media URL is a few hundred bytes, a busy camera produces hundreds a day, and a host
+ * that caps an app's memory does not care that each one is small.
+ */
+const MAX_REMEMBERED_URLS = 64;
 
 type Candidate = {
   deviceKey: string;
@@ -39,7 +51,13 @@ export class StoredImageCache {
     private readonly isLifecycleError: (error: unknown) => boolean = () => false,
   ) {}
 
-  /** Observe a normalized thumbnail URL and start acquisition eagerly. */
+  /**
+   * Observe a normalized thumbnail URL and start acquisition eagerly.
+   *
+   * A URL already inside this device's window of recent attempts is ignored, so one event arriving as
+   * several pushes downloads one thumbnail. The window is a `Set`, which iterates in insertion order,
+   * so the entry evicted once it is full is the oldest attempt.
+   */
   observe(deviceKey: string, url: string): void {
     let state = this.devices.get(deviceKey);
     if (!state) {
@@ -53,6 +71,11 @@ export class StoredImageCache {
     }
     if (state.seenUrls.has(url)) return;
     state.seenUrls.add(url);
+    while (state.seenUrls.size > MAX_REMEMBERED_URLS) {
+      const oldest = state.seenUrls.values().next();
+      if (oldest.done) break;
+      state.seenUrls.delete(oldest.value);
+    }
     state.queued = {
       deviceKey,
       url,
@@ -108,7 +131,7 @@ export class StoredImageCache {
       } else if (image === undefined) {
         state.lifecycleError = undefined;
         state.reason = "download-failed";
-        this.diagnose(state, candidate, "download-failed");
+        this.diagnose(state, candidate, "download-failed", error);
       } else if (!this.isValidJpeg(image)) {
         state.lifecycleError = undefined;
         state.reason = "invalid-image";
@@ -136,15 +159,41 @@ export class StoredImageCache {
     );
   }
 
-  private diagnose(state: DeviceState, candidate: Candidate, failure: "download-failed" | "invalid-image"): void {
+  private diagnose(
+    state: DeviceState,
+    candidate: Candidate,
+    failure: "download-failed" | "invalid-image",
+    error?: unknown,
+  ): void {
     const now = this.clock();
     const last = state.loggedFailures.get(failure);
     if (last !== undefined && now - last < DIAGNOSTIC_INTERVAL_MS) return;
     state.loggedFailures.set(failure, now);
     this.logger.warn("[stored-snapshot-cache] candidate failed", {
       class: failure,
+      ...mediaFailureTag(error),
       observedAt: candidate.observedAt,
       retained: state.retained !== undefined,
     });
   }
+}
+
+/**
+ * The closed-vocabulary failure tag an error carries, if it carries one this file recognises.
+ *
+ * Read off an unknown error and checked against {@link MEDIA_FAILURE_REASONS} rather than trusted: the
+ * downloader is injected, so its errors are whatever the caller's implementation throws, and the one
+ * thing that must never reach a log line here is a message someone else wrote — a media URL is signed,
+ * and a failure often quotes the response. A term this SDK defines is safe by construction; anything
+ * else is dropped, leaving the log exactly as uninformative as it was before.
+ */
+function mediaFailureTag(error: unknown): { cause?: MediaFailureReason; status?: number } {
+  if (typeof error !== "object" || error === null) return {};
+  const { mediaFailure, status } = error as { mediaFailure?: unknown; status?: unknown };
+  if (typeof mediaFailure !== "string") return {};
+  const cause = MEDIA_FAILURE_REASONS.find((reason) => reason === mediaFailure);
+  if (!cause) return {};
+  return Number.isInteger(status) && (status as number) >= 100 && (status as number) <= 599
+    ? { cause, status: status as number }
+    : { cause };
 }

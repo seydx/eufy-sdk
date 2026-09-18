@@ -16,12 +16,17 @@ import type { SolixProductCategory } from "../core/solix-types.js";
  * Flatten a product catalog into a `product_code → { name, category }` lookup for labelling
  * discovered devices. Every variant code in `p_codes` maps to its parent product too, so a device
  * reporting a sub-model resolves to the same marketing name.
+ *
+ * The category name is trimmed here, at ingest — the live catalog returns some names with trailing
+ * whitespace (e.g. `"Plug-in Home Battery "`), and normalising once at the source means every consumer
+ * (a device's `identity().category`, `detectSolixCapabilities`, and any exact-match category test) sees
+ * the clean name, rather than each call site having to remember to trim.
  */
 export function buildModelIndex(categories: SolixProductCategory[]): Map<string, { name: string; category: string }> {
   const index = new Map<string, { name: string; category: string }>();
   for (const category of categories) {
     for (const product of category.products ?? []) {
-      const entry = { name: product.name, category: category.name };
+      const entry = { name: product.name, category: category.name.trim() };
       if (product.product_code) index.set(product.product_code, entry);
       for (const variant of product.p_codes ?? []) {
         const code = typeof variant === "string" ? variant : (variant as { product_code?: string })?.product_code;

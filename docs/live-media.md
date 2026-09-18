@@ -268,12 +268,32 @@ open P2P, start live media, or transcode. If no JPEG is retained it rejects with
 
 - `not-observed` — no qualifying candidate has been observed;
 - `pending` — acquisition of a qualifying candidate is queued or in progress;
-- `download-failed` — the latest acquisition could not be downloaded;
-- `invalid-image` — downloaded bytes did not have the required JPEG structure.
+- `download-failed` — the latest acquisition did not produce an image;
+- `invalid-image` — the bytes that arrived did not have the required JPEG structure.
 
-Only structurally valid, bounded JPEG bytes are retained. V1 `eufysecurity:` wrappers are decrypted
-with their device record's key input before validation. V2 wrappers do not pass validation because
-their reconstruction requires image decoding and re-encoding outside this contract.
+Only structurally valid, bounded JPEG bytes are retained. `eufysecurity:` wrappers are unwrapped before
+validation: a v1 wrapper is decrypted with its device record's key input, and a v2 wrapper — which is
+not encrypted, only stripped of its header — is reconstructed from its own entropy-coded scan.
+
+`download-failed` covers everything between observing a URL and holding an image, so the SDK also logs
+WHY, as a `cause` on the `[stored-snapshot-cache] candidate failed` warning. It is a closed vocabulary,
+because the alternative — the underlying error's message — would put a signed media URL and a response
+body in a log line:
+
+- `url-not-allowed` — the candidate URL failed the media allowlist (scheme, credentials, port, a literal
+  address, or a host the SDK does not download from). Nothing was requested;
+- `address-not-public` — the host resolved to nothing, or to an address that is not public;
+- `redirect-not-allowed` — the redirect had no target, went somewhere the object-store allowlist
+  refuses, or was followed by a second one;
+- `http-status` — the host answered with something other than 200, reported alongside as `status`;
+- `too-large` — the body exceeded the 10 MiB bound, declared or observed;
+- `timeout` — the attempt, DNS included, outlived the 15 s window;
+- `network` — the request itself failed: connect, TLS, or a reset mid-body;
+- `decode-failed` — the bytes arrived and the push-image decoder refused them.
+
+A candidate is attempted once: the same URL arriving again on a later push (one event is often several)
+is recognised as already attempted and not re-downloaded, for as long as it is inside the per-device
+window of recent URLs. The next event carries a new URL and a new attempt.
 
 The cache is enabled by default. Constructing `EufyMega` with `{ storedSnapshotCache: false }` ignores
 candidates and omits `snapshotStored` from bound cameras. Retained bytes live only in the client process

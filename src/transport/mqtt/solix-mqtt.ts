@@ -41,24 +41,141 @@ export interface SolixParamFrame {
 
 /**
  * Telemetry field tags for the Smart Meter (AE1X0) that we emit under a stable NAME, keyed by ff09 tag
- * byte. Only tags whose tag→name binding is CONFIRMED against a live frame live here:
+ * byte. These twelve are the meter fields the vendor app itself names, and their tag→name bindings are
+ * confirmed:
  *
- * - `0xac` = `meterVoltageL1` — confirmed against live single-phase data (a nominal mains voltage).
+ * - The app's field vocabulary is exactly these twelve — voltage, current and power per line
+ *   (L1/L2/L3), a power total, and cumulative import/export energy — with no current total, no
+ *   frequency and no power-factor field.
+ * - A live single-phase frame confirms the tag→field magnitudes: `0xac` a nominal mains voltage,
+ *   `0xa8` == `0xab` an equal power pair (line power equals total on one phase, one of them going
+ *   negative on export), `0xaf` the line current, `0xb3` a slowly-cumulative import counter; the L2/L3
+ *   slots read 0 on a single-CT install.
  *
- * Every other measurement tag still surfaces as `channel_<hex tag>` (see {@link solixReadings}), so
- * nothing on the wire is lost — a caller reads unconfirmed tags there. The names are deliberately NOT
- * asserted for the rest: the app exposes the field *list*, but the tag→name *binding* below is a
- * structural inference until a known-load capture pins it, and a mislabelled live float is worse than an
- * honest `channel_<tag>`. The recovered candidates, to re-add one line each (moving the tag from this
- * comment to the map above) as a known-load capture confirms each binding:
+ * The frame carries sixteen float slots (`0xa8`..`0xb7`). The four that name no field — `0xb2`, `0xb5`,
+ * `0xb6`, `0xb7` — stay raw `channel_<hex tag>` (see {@link solixReadings}). `0xb2` in particular is NOT
+ * a current total: under a 1.371 A line current it reads 0.009, three orders of magnitude off. Both
+ * `0xb2` and `0xb7` read zero at idle and non-zero under load, so they carry *something* load-related;
+ * what, is not established.
  *
- *   0xa8 meterPowerL1   0xa9 meterPowerL2   0xaa meterPowerL3   0xab meterPowerTotal
- *   0xad meterVoltageL2 0xae meterVoltageL3 0xaf meterCurrentL1 0xb0 meterCurrentL2
- *   0xb1 meterCurrentL3 0xb2 meterCurrentTotal 0xb3 meterImportEnergy 0xb4 meterExportEnergy
+ * This table is **meter-family-specific**: the same tag carries a different quantity on another Solix
+ * device (a Solarbank's `0xac` reads a power value, not a voltage), so {@link solixReadings} applies
+ * these names ONLY to a frame from the meter family — see {@link SOLIX_METER_PRODUCT_PREFIXES}. Every
+ * measurement tag still surfaces as `channel_<hex tag>` regardless of device, so nothing on the wire is
+ * lost; the model layer names non-meter tags per capability.
  */
 export const SOLIX_METER_FIELD_NAMES: Readonly<Record<number, string>> = {
+  0xa8: "meterPowerL1",
+  0xa9: "meterPowerL2",
+  0xaa: "meterPowerL3",
+  0xab: "meterPowerTotal",
   0xac: "meterVoltageL1",
+  0xad: "meterVoltageL2",
+  0xae: "meterVoltageL3",
+  0xaf: "meterCurrentL1",
+  0xb0: "meterCurrentL2",
+  0xb1: "meterCurrentL3",
+  0xb3: "meterImportEnergy",
+  0xb4: "meterExportEnergy",
 };
+
+/**
+ * Product-code prefixes of the Smart Meter family that {@link SOLIX_METER_FIELD_NAMES} decodes. The table
+ * is meter-specific, so {@link solixReadings} applies its named fields ONLY to a frame whose product code
+ * starts with one of these; a Solarbank (`AE103`) reporting the same `0xac` tag would otherwise be
+ * mislabelled `meterVoltageL1` with a nonsensical (negative-power) value. These are product-code prefixes
+ * used to select a decode table — not a model import — so the `transport ⊥ model` rule is untouched.
+ *
+ * Keep this in lockstep with `SOLIX_METER_MODELS` in `model/capabilities/solix.ts` (the same meter
+ * prefixes, model-side): a prefix added there but not here grants `energyMeter` to a device whose frames
+ * this decoder then refuses to name, and no guard can catch the split (the model layer can't import
+ * transport). Add a meter prefix to both.
+ */
+export const SOLIX_METER_PRODUCT_PREFIXES: readonly string[] = ["AE1X0"];
+
+/**
+ * Product-code prefix of the gen-4 Solarbank (the `ats_ax170` family, e.g. `AE103` Solarbank 4 E5000
+ * Pro) whose ff09 tag layout {@link SOLIX_SOLARBANK_FIELD_NAMES} + the SOC/temperature extraction
+ * describe. Like the meter table this is family-specific — the SAME tag carries a different quantity on
+ * the meter (`0xac` is line voltage there, battery power here), so the Solarbank names are applied ONLY
+ * to a frame from this family. A product-code prefix used to pick a decode table, not a model import.
+ * `AE10` covers the AE10x gen-4 Solarbanks and does NOT match the meter (`AE1X0`, whose 4th char is `X`).
+ */
+export const SOLIX_SOLARBANK_PRODUCT_PREFIX = "AE10";
+
+/**
+ * Confirmed ff09 tag → field bindings for the gen-4 Solarbank (`ats_ax170`), correlated live against the
+ * app UI. Power values in watts; signed fields note their sign convention:
+ * - `0xac` battery power, SIGNED (+ charging / − discharging) — the measured net pack power.
+ * - `0xbc` charge power (0 unless charging); `0xad` discharge power (0 unless discharging).
+ * - `0xae` AC plug power, SIGNED (+ feeding the home / − drawing in to charge).
+ * - `0xaf` socket power — the unit's own on-board AC outlet (an appliance plugged into the Solarbank).
+ * - `0xc4` grid input power; `0xc5` home load power.
+ * SOC and temperature are NOT float channels — see {@link solixReadings}, which reads SOC from tag `0xa3`
+ * (a uint8) and temperature from the `0xa4` BMS status blob. The 4 PV-string channels (`0xc6`–`0xc9`),
+ * the AC currents (`0xb2`/`0xb3`) and export energy (`0xb4`) are not yet confirmed, so they stay raw
+ * `channel_<hex>` until a capture pins them.
+ */
+export const SOLIX_SOLARBANK_FIELD_NAMES: Readonly<Record<number, string>> = {
+  0xab: "photovoltaicPower", // total PV input across the strings
+  0xac: "batteryPower",
+  0xbc: "chargePower",
+  0xad: "dischargePower",
+  0xae: "acPlugPower",
+  0xaf: "socketPower", // the unit's own on-board AC socket (an appliance plugged into the Solarbank)
+  0xc4: "gridInputPower",
+  0xc5: "homeLoadPower",
+  0xc6: "pv1Power", // the four PV-string inputs (0 when a string is unused / dark)
+  0xc7: "pv2Power",
+  0xc8: "pv3Power",
+  0xc9: "pv4Power",
+};
+
+/**
+ * Confirmed `state_info` tag → field bindings for the gen-4 Solarbank. `state_info` is a SEPARATE push
+ * topic from `param_info` and, though it shares the ff09 framing, its tags carry SETTINGS/targets, NOT
+ * live measurements — so the SAME tag byte means something different here than in
+ * {@link SOLIX_SOLARBANK_FIELD_NAMES} (e.g. `0xab` is live PV power in param_info, the mode's AC-socket
+ * export limit here). Mapped by live observation against the app's SOC-setting screen; everything else
+ * stays raw `state_<hex>` until confirmed the same way.
+ */
+export const SOLIX_STATE_FIELD_NAMES: Readonly<Record<number, string>> = {
+  0xa9: "mode", // current operating (EMS) mode (1 custom, 2 self-consumption, 4 rapid charge, 7 smart, 8 dynamic tariff)
+  0xaa: "maxLoad", // configured max home load (W) — matches get_site_device_param max_load
+  // NOTE `0xab` is grid-in/out-related power but its exact meaning is not yet pinned, so it stays raw
+  // `state_ab` (a diagnostic a consumer can watch) rather than being asserted under a guessed name.
+};
+
+/**
+ * Decode a `state_info` ff09 frame to named + raw settings values. Skips the header tags (`< 0xa5`:
+ * request marker, serial, timestamps). Each settings tag is emitted under `state_<hex>` (a plain number
+ * so it's watchable in a consumer while more tags get mapped) AND, when confirmed, under its name from
+ * {@link SOLIX_STATE_FIELD_NAMES}. Value is read type-aware: `0x05` float32, `0x02` u16, `0x01` u8, and
+ * `0x03` the whole-number settings byte (`payload[1]`).
+ *
+ * The header cutoff is `0xa5` here, deliberately one lower than {@link solixReadings}' `0xa6` for
+ * `param_info`: the two frames are different layouts under the same ff09 framing — `state_info` carries
+ * a settings value at `0xa5` (SOC), where `param_info` has a header tag. The cutoffs are not meant to
+ * match; the spec pins `0xa5`'s treatment in each so they can't silently drift together.
+ */
+export function solixStateReadings(frame: SolixParamFrame): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [tag, value] of frame.fields) {
+    if (tag < 0xa5 || !value || value.length < 2) continue;
+    const type = value[0];
+    const pl = value.subarray(1);
+    let num: number | undefined;
+    if (type === 0x05 && pl.length >= 4) num = pl.readFloatLE(0);
+    else if (type === 0x02 && pl.length >= 2) num = pl.readUInt16LE(0);
+    else if (type === 0x01 && pl.length >= 1) num = pl[0];
+    else if (type === 0x03 && pl.length >= 2) num = pl[1]; // settings integer (fraction in pl[0])
+    if (num === undefined) continue;
+    out[`state_${tag.toString(16)}`] = num;
+    const name = SOLIX_STATE_FIELD_NAMES[tag];
+    if (name) out[name] = num;
+  }
+  return out;
+}
 
 /** Interpret one TLV value as a telemetry channel (leading type byte + payload). */
 export function readSolixChannel(value: Buffer | undefined): SolixChannel | undefined {
@@ -101,19 +218,66 @@ export function decodeSolixParamFrame(buf: Buffer): SolixParamFrame | null {
  * carry the field count, the serial and the status, not measurements. A measurement channel is one whose
  * leading type byte is `0x05` (float32 LE over a 4-byte payload); any other type is a non-measurement
  * param and contributes nothing. Each measurement is emitted under `channel_<hex tag>`, and additionally
- * under its name when the tag has a confirmed one in {@link SOLIX_METER_FIELD_NAMES}.
+ * under its name when the tag has a confirmed one AND `productCode` is from a known family — pass the
+ * telemetry topic's product code so a device outside the meter/Solarbank families keeps raw
+ * `channel_<hex>` rather than borrowing another family's tag→name table. `productCode` is required (it
+ * comes straight from the telemetry topic); pass `""` for a frame of unknown origin and no names apply.
+ * Meter family: {@link SOLIX_METER_PRODUCT_PREFIXES}; Solarbank: {@link SOLIX_SOLARBANK_PRODUCT_PREFIX}.
  */
-export function solixReadings(frame: SolixParamFrame): Record<string, number> {
+export function solixReadings(frame: SolixParamFrame, productCode: string): Record<string, number> {
   const out: Record<string, number> = {};
+  const isMeter = SOLIX_METER_PRODUCT_PREFIXES.some((p) => productCode.startsWith(p));
+  const isSolarbank = productCode.startsWith(SOLIX_SOLARBANK_PRODUCT_PREFIX);
+  const floatNames = isMeter ? SOLIX_METER_FIELD_NAMES : isSolarbank ? SOLIX_SOLARBANK_FIELD_NAMES : undefined;
   for (const [tag, value] of frame.fields) {
     if (tag < 0xa6) continue;
     const ch = readSolixChannel(value);
     if (ch?.type !== 0x05 || ch.float === undefined) continue;
     out[`channel_${tag.toString(16)}`] = ch.float;
-    const name = SOLIX_METER_FIELD_NAMES[tag];
+    const name = floatNames?.[tag];
     if (name) out[name] = ch.float;
   }
+  if (isSolarbank) addSolarbankScalars(frame, out);
   return out;
+}
+
+/**
+ * Add the Solarbank's non-float scalars that the measurement loop above cannot reach: SOC, battery
+ * temperature and the SOC limits. These are family-specific — on the meter tag `0xa3` is a status byte,
+ * not SOC — so this runs only for a Solarbank frame.
+ *
+ * - **SOC** (`batterySoc`, %) is tag `0xa3`, a `uint8` (so it is skipped by the float loop and by the
+ *   `< 0xa6` guard).
+ * - **Temperature** (`batteryTemperature`, °C) + **health** come from the `0xa4` BMS status blob (after
+ *   its leading type byte), whose trailing struct is `[… TEMP 01 SOC SOH 00 01 00 02]`. The parse is
+ *   **self-validated**: the SOC byte inside the blob must equal tag `0xa3`, else the blob is a
+ *   different/empty variant (the realtime frame carries an empty `0xa4`) and temperature is withheld
+ *   rather than read from the wrong offset.
+ * - **SOC limits** (`dischargeLimit`/`chargeLimit`, %) come from tag `0xb5`'s SETTINGS-blob variant —
+ *   type `0x04` with exactly 3 payload bytes, `[discharge, output cutoff, charge]`. Confirmed live:
+ *   moving discharge 10%→5% moved `b5[1]` 0x0a→0x05 while charge held at `b5[3]`=0x64. The FAST telemetry
+ *   frame (msgtype 0x05, ~7 s) also carries a `0xb5` type-`0x04` blob, but a 25-byte one whose bytes are
+ *   not the limits — hence the exact length gate.
+ * - **Ambient light** is NOT emitted here. Tag `0xba` bit `0x20` tracks only this SDK's own
+ *   `set_device_attrs` write; an app-side toggle goes via an `…/req` cmd-17 `a4` and leaves `ba`
+ *   unchanged, so on every ~7 s frame `ba` would clobber the correct value read from the command
+ *   channel. State comes solely from {@link SolixMqtt.handleCommand}.
+ */
+function addSolarbankScalars(frame: SolixParamFrame, out: Record<string, number>): void {
+  const a3 = frame.fields.get(0xa3);
+  const soc = a3 && a3.length >= 2 ? a3[1]! : undefined;
+  if (soc !== undefined) {
+    out.batterySoc = soc;
+    const body = frame.fields.get(0xa4)?.subarray(1);
+    if (body && body.length >= 8 && body[body.length - 6] === soc) {
+      out.batteryTemperature = body[body.length - 8]!;
+    }
+  }
+  const b5 = frame.fields.get(0xb5);
+  if (b5 && b5[0] === 0x04 && b5.length === 4) {
+    out.dischargeLimit = b5[1]!;
+    out.chargeLimit = b5[3]!;
+  }
 }
 
 /** A live telemetry sample emitted by {@link SolixMqtt} as a `reading` event. */
@@ -228,9 +392,14 @@ export class SolixMqtt extends EventEmitter {
    * Connect, subscribe to the device's telemetry (+ command-reply) topics, ARM realtime reporting, and
    * start the re-arm/heartbeat timer so telemetry keeps flowing without the app. Idempotent per device.
    *
-   * Subscribes ONLY to what the device sends — `param_info` plus the device and account command-reply
-   * channels — never the `…/req` channels, which are the app→device request side this arms on, and would
-   * echo its own publishes back.
+   * Subscribes to `param_info` (+ the device/account command-reply channels) AND the device's `…/req`
+   * channel. `…/req` is the app→device request side — the broker copies the APP's own publishes there to
+   * any co-subscriber, so watching it lets us read a control the app changed that the telemetry does NOT
+   * reflect: the Solarbank's ambient light and display timeout ride an `…/req` cmd-17 (`0x68`) command
+   * (tags `a4`/`a5`), and the `param_info` `ba` bit only tracks OUR `set_device_attrs` write, never the
+   * app's separate command path. `onMessage` filters these — our own arming/echoes carry no
+   * `a4`/`a5` — and turns an app command into a `reading` with the app-set state. A `…/req` grant denial
+   * is non-fatal (only `param_info` is required); we just won't see app-side changes.
    *
    * Throws when `param_info` was not granted. A scope-denied filter comes back as SUBACK_FAILURE rather
    * than an error (see `SecureMqtt.subscribe`), so an unusable subscription otherwise looks like
@@ -243,7 +412,9 @@ export class SolixMqtt extends EventEmitter {
     const topics = solixDeviceTopics(this.appName, device.product_code, device.device_sn);
     const granted = await this.transport.subscribe([
       topics.paramInfo,
+      topics.stateInfo,
       topics.cmdRes,
+      topics.req,
       ...(this.userId ? [solixUserTopics(this.appName, this.userId).cmdRes] : []),
     ]);
     if (!granted.includes(topics.paramInfo)) {
@@ -271,6 +442,20 @@ export class SolixMqtt extends EventEmitter {
     }
     this.watched.clear();
     await this.transport.disconnect();
+  }
+
+  /**
+   * Set a Solarbank's display screen-off timeout — publishes the captured cmd-17 command (ff09 msgtype
+   * `0x68`, tag `a5 = [01, index]`) on the device's `…/req` channel via the same envelope the arming
+   * poll uses (`sign_code:1`, no per-message signature — which the device accepts for cmd 17). `index`
+   * is the 1-based dropdown position (10s=1, 20s=2, 30s=3, 1m=4, 5m=5, 30m=6); "Never" is a separate
+   * command not handled here. Fire-and-forget: the device does not ack on a subscribed channel.
+   */
+  async setDisplayTimeout(device: SolixMqttDevice, index: number): Promise<void> {
+    const topic = solixDeviceTopics(this.appName, device.product_code, device.device_sn).req;
+    const body = this.commandEnvelope(device, buildDisplayTimeoutFrame(index), {});
+    await this.transport.publish(topic, body, { qos: 1 });
+    this.logger?.debug?.(`[solix] display timeout set index=${index} on ${device.device_sn}`);
   }
 
   /**
@@ -365,22 +550,70 @@ export class SolixMqtt extends EventEmitter {
    * Decode one inbound MQTT message envelope and emit a `reading` if it carries an ff09 param frame. The
    * product code and the fallback serial come from the topic (`dt/{app}/{pn}/{sn}/param_info`); the frame's
    * own `a2` field wins for the serial when it carries one.
+   *
+   * Serial resolution matters because NOT every frame carries it: the device-info frame (which alone
+   * carries SOC/temperature via tags a3/a4) has a 1-byte `a2` (a status, not a serial) and can arrive on
+   * a topic whose serial segment isn't the device serial either — leaving a `deviceSn` that matches no
+   * watched device, so a consumer keying on it would drop the reading (and its temperature). So when the
+   * resolved serial isn't a watched device, fall back to the single watched device of this product code.
    */
   private onMessage(msg: { topic?: string; raw: unknown }): void {
     const topic = msg.topic ?? "";
     const buf = extractFf09Payload(msg.raw);
     if (!buf) return;
+    // The app→device command channel: read back a control the app changed (ambient light / display
+    // timeout) that the `param_info` telemetry does not reflect. See {@link handleCommand}.
+    if (topic.endsWith("/req")) {
+      this.handleCommand(topic, buf);
+      return;
+    }
     const frame = decodeSolixParamFrame(buf);
     if (!frame) return;
     const parts = topic.split("/");
-    const reading: SolixReading = {
-      deviceSn: frame.deviceSn ?? parts[3] ?? "",
-      productCode: parts[2] ?? "",
-      topic,
-      frame,
-      values: solixReadings(frame),
-    };
-    this.emit("reading", reading);
+    const productCode = parts[2] ?? "";
+    let deviceSn = frame.deviceSn ?? parts[3] ?? "";
+    if (!this.watched.has(deviceSn)) {
+      const ofProduct = [...this.watched.values()].filter((d) => d.product_code === productCode);
+      if (ofProduct.length === 1) deviceSn = ofProduct[0]!.device_sn;
+    }
+    // `state_info` shares the ff09 framing but its tags are SETTINGS, not measurements — decode with the
+    // state table (its own field names + raw `state_<hex>`), never the param_info measurement table.
+    const values = topic.endsWith("/state_info")
+      ? solixStateReadings(frame)
+      : // Pass the product code so meter tag→name binding is applied only to a meter frame; a Solarbank's
+        // tags stay raw channel_<hex> (the model names them per capability) rather than being mislabelled.
+        solixReadings(frame, productCode);
+    this.emit("reading", { deviceSn, productCode, topic, frame, values });
+  }
+
+  /**
+   * Turn an app→device cmd-17 (`0x68`) command seen on the `…/req` channel into a `reading` carrying the
+   * app-set control state, so a change made in the app reflects back. The Solarbank's ambient light and
+   * display timeout are set this way (byte-identical to what {@link setDisplayTimeout} publishes), and the
+   * broker copies the app's publish to us as a co-subscriber. Only `0x68` frames carrying `a4`/`a5` are
+   * emitted, so the arming polls (`0x40`/`0x57`) and our own echoes contribute nothing:
+   * - `a4 = [01, s]` → ambient light, INVERTED (`s` 0 = on) → `ambientLightOn` 1/0. The `ba` telemetry
+   *   bit only tracks our `set_device_attrs` write, so this is the ONLY read-back of an app light toggle.
+   * - `a5 = [01, i]` → display timeout, `i` = 1-based dropdown index → `displayTimeoutIndex`.
+   */
+  private handleCommand(topic: string, buf: Buffer): void {
+    if (buf.length < 10 || buf[8] !== 0x68) return; // only cmd-17 setting commands carry a4/a5
+    const frame = decodeSolixParamFrame(buf);
+    if (!frame) return;
+    const values: Record<string, number> = {};
+    const a4 = frame.fields.get(0xa4);
+    if (a4 && a4.length >= 2) values.ambientLightOn = a4[1] === 0 ? 1 : 0;
+    const a5 = frame.fields.get(0xa5);
+    if (a5 && a5.length >= 2) values.displayTimeoutIndex = a5[1]!;
+    if (Object.keys(values).length === 0) return;
+    const parts = topic.split("/");
+    const productCode = parts[2] ?? "";
+    let deviceSn = frame.deviceSn ?? parts[3] ?? "";
+    if (!this.watched.has(deviceSn)) {
+      const ofProduct = [...this.watched.values()].filter((d) => d.product_code === productCode);
+      if (ofProduct.length === 1) deviceSn = ofProduct[0]!.device_sn;
+    }
+    this.emit("reading", { deviceSn, productCode, topic, frame, values });
   }
 }
 
@@ -418,6 +651,25 @@ export function extractFf09Payload(raw: unknown): Buffer | null {
  * `fe` carries a fresh unix-timestamp nonce; the trailing byte is XOR of every preceding byte (the same
  * checksum the meter's telemetry frames use — verified to reproduce the captured frames exactly).
  */
+/**
+ * Build the display screen-off-timeout command frame (ff09 msgtype `0x68`, tag `a5 = [01, index]`),
+ * captured live from the app on `cmd/anker_power/<pc>/<sn>/req` (cmd 17). `index` is the 1-based
+ * position in the app dropdown `[10s,20s,30s,1m,5m,30m]` — live-confirmed 10s=1, 30s=3, 1m=4. "Never"
+ * is a separate command (not this one). Byte-identical to the captured frames modulo the index byte.
+ */
+export function buildDisplayTimeoutFrame(index: number): Buffer {
+  const body = Buffer.from([0x03, 0x00, 0x0f, 0x00, 0x68, 0xa1, 0x01, 0x22, 0xa5, 0x02, 0x01, index & 0xff]);
+  const frame = Buffer.alloc(body.length + 5);
+  frame[0] = 0xff;
+  frame[1] = 0x09;
+  frame.writeUInt16LE(frame.length, 2);
+  body.copy(frame, 4);
+  let xor = 0;
+  for (let i = 0; i < frame.length - 1; i++) xor ^= frame[i]!;
+  frame[frame.length - 1] = xor;
+  return frame;
+}
+
 export function buildFf09Request(variant: "info" | "realtime", atUnixSec?: number): Buffer {
   const ts = Buffer.alloc(4);
   ts.writeUInt32LE((atUnixSec ?? Math.floor(Date.now() / 1000)) >>> 0);

@@ -30,7 +30,11 @@ import {
   type SessionEntry,
   type SessionStore,
   type SolixDeviceRecord,
+  type SolixPowerCutoffOption,
   type SolixProductCategory,
+  type SolixSiteRecord,
+  type SolixSiteScene,
+  type SolixSocParams,
 } from "../../core/index.js";
 import type { SecureMqttCredentials } from "../mqtt/secure-mqtt.js";
 
@@ -101,6 +105,14 @@ export type SolixSessionStore = SessionStore<SolixPersisted>;
 function solixSessionFresh(s: SolixSession | undefined): s is SolixSession {
   return !!s?.authToken && tokenNotExpired(s.tokenExpiresAt);
 }
+
+/**
+ * Vendor code for a token displaced by another login on the account ("token does not exist because it
+ * was kicked out"). Anker runs ~one session per account, so the app or a second client re-logging in
+ * invalidates a running client's token; {@link SolixClient.authed} treats this code as recoverable and
+ * re-logs in once. Distinct from expiry — a kicked token still has a future `tokenExpiresAt`.
+ */
+const SOLIX_TOKEN_KICKED_CODE = 26084;
 
 /** Format 32 hex chars as a UUID (8-4-4-4-12) — used to derive a stable openudid from the email. */
 const uuidFromHex = (hex: string): string =>
@@ -275,6 +287,11 @@ export class SolixClient {
    * Turn a decrypted `/passport/login` payload into an `ok`/`2fa` result, establishing the session on
    * `ok`. The passport marks a pending 2FA with a non-empty `fa_info.info`, and empties it once the code
    * has been satisfied.
+   *
+   * `gtoken` is hashed from `ap_cloud_user_id` where the reply carries one, `user_id` otherwise. Whether
+   * this gateway recomputes the header from `user_id` specifically — as the mega gateway does, rejecting a
+   * disagreement with `"gtoken not equal userid error"` — is unverified here: no Solix response has been
+   * observed refusing the header, which is consistent with the two ids agreeing on the accounts seen.
    */
   private classifyLogin(data: Record<string, unknown>, isVerify: boolean): SolixLoginResult {
     const userId = (data.ap_cloud_user_id ?? data.user_id) as string | undefined;
@@ -316,7 +333,30 @@ export class SolixClient {
     await this.estimateHost();
     const kx = await this.keyExchange();
     const env = await this.postLogin(kx);
+    this.assertLoginAccepted(env);
     return this.classifyLogin(this.decryptLogin(env, kx), false);
+  }
+
+  /**
+   * On a rejected `/passport/login` (non-zero code, so `data` is an error envelope not the encrypted
+   * payload), throw a diagnostic that names WHY the passport refused — the throttle (`26161`, "too
+   * frequent") vs a challenge it wants the client to satisfy. The passport marks a required captcha with
+   * a `captcha_id`/`item`; our headless client cannot answer one, so surfacing it distinguishes "wait
+   * out the rate-limit" from "a captcha is required — clear it in the app". No secrets are logged, only
+   * the code, message, and which challenge fields are present.
+   */
+  private assertLoginAccepted(env: SolixEnvelope): void {
+    if (env.code === 0) return;
+    const d = (env.data ?? {}) as Record<string, unknown>;
+    const hints: string[] = [];
+    if (typeof d === "object" && d) {
+      if ("captcha_id" in d && d.captcha_id) hints.push("captcha_id present (captcha required)");
+      if ("item" in d && d.item) hints.push(`item=${String(d.item).slice(0, 40)}`);
+      const keys = Object.keys(d);
+      if (keys.length && hints.length === 0) hints.push(`data keys: ${keys.join(",")}`);
+    }
+    const detail = hints.length ? ` [${hints.join("; ")}]` : "";
+    throw new Error(`Solix login (${env.code}): ${env.msg}${detail}`);
   }
 
   /** Complete a `2fa` login with the code the passport sent. */
@@ -330,8 +370,18 @@ export class SolixClient {
   /**
    * One authenticated PLAIN read for both GET and POST endpoints (no per-request encryption; carries
    * the auth token + `gtoken` only). Routes through {@link send} so every read keeps the non-JSON guard.
+   *
+   * Self-heals a **displaced session**: Anker allows ~one session per account, so another login (the app,
+   * or a second client) invalidates this token and reads then fail with {@link SOLIX_TOKEN_KICKED_CODE}
+   * ("token does not exist because it was kicked out"). On that code this re-logs in once and retries, so
+   * a running client recovers on its own instead of failing every read until its session store is cleared.
    */
-  private async authed<T = unknown>(method: "GET" | "POST", path: string, body?: Record<string, unknown>): Promise<T> {
+  private async authed<T = unknown>(
+    method: "GET" | "POST",
+    path: string,
+    body?: Record<string, unknown>,
+    reauthed = false,
+  ): Promise<T> {
     if (!this.session_) throw new Error("not authenticated — call login() first");
     const env = await this.send(
       method,
@@ -340,8 +390,18 @@ export class SolixClient {
       this.baseHeaders({ gtoken: this.session_.gtoken, "x-auth-token": this.session_.authToken }),
       body ? JSON.stringify(body) : undefined,
     );
-    if (env.code !== 0) throw new Error(`Solix ${path} failed (${env.code}): ${env.msg}`);
-    return (env.data ?? null) as T;
+    if (env.code === 0) return (env.data ?? null) as T;
+    // A kicked token is not "expired", so login() would otherwise reuse it — clear it first to force a
+    // full handshake. One retry only (the `reauthed` guard), so a persistently-contested session (e.g. the
+    // app held open on the account) fails cleanly rather than looping.
+    if (env.code === SOLIX_TOKEN_KICKED_CODE && !reauthed) {
+      this.session_ = undefined;
+      const r = await this.login();
+      if (r.status !== "ok")
+        throw new Error(`Solix ${path}: session was kicked and re-login did not complete (${r.status})`);
+      return this.authed<T>(method, path, body, true);
+    }
+    throw new Error(`Solix ${path} failed (${env.code}): ${env.msg}`);
   }
 
   /**
@@ -358,15 +418,36 @@ export class SolixClient {
     return (Array.isArray(data) ? data : (data?.data ?? [])) as SolixDeviceRecord[];
   }
 
-  /** The account's sites (systems); devices are typically grouped under a site. */
-  async getSites(): Promise<unknown[]> {
+  /**
+   * The account's sites (systems); devices are grouped under a site. Each record carries its
+   * `site_device_list` (the member devices), which {@link discoverSolixSites} resolves into a
+   * capability-driven `SolixSite`. Asserted to {@link SolixSiteRecord} at this trust boundary — and
+   * `site_id` (the one field the model layer keys a `SolixSite` on) is validated here, so a record the
+   * cloud returns without a usable id is dropped rather than surfacing a `SolixSite` with `id ===
+   * undefined`; every other field is optional and read defensively.
+   */
+  async getSites(): Promise<SolixSiteRecord[]> {
     const data = await this.authed<{ site_list?: unknown[] }>("POST", SOLIX_ENDPOINTS.getSiteList, {});
-    return data?.site_list ?? [];
+    const list = (data?.site_list ?? []) as SolixSiteRecord[];
+    return list.filter((s) => typeof s?.site_id === "string" && s.site_id.length > 0);
   }
 
   /** Per-user AWS-IoT MQTT credentials (cert/key/endpoint/thing) for the real-time device plane. */
   async getUserMqttInfo(): Promise<SecureMqttCredentials> {
     return this.authed<SecureMqttCredentials>("POST", SOLIX_ENDPOINTS.getUserMqttInfo, {});
+  }
+
+  /**
+   * Read a site's "scene" snapshot — the app's dashboard read for a system, a plain authed read. Its
+   * battery detail (`solarbank_info.solarbank_list[]`) carries clean, correctly-named fields including
+   * `bat_temperature`, which the realtime `ff09` MQTT push does NOT reliably carry (the fast frame's BMS
+   * blob is empty, so the decoder withholds temperature). This is therefore a low-rate BACKSTOP for those
+   * gap fields — NOT the realtime source: live power/SOC still come from the MQTT push (which is what the
+   * app itself refreshes from every ~5 s; there is no clean-JSON scene PUSH). Verified live against the
+   * `ff09` floats — the two agree to the watt at the same instant.
+   */
+  async getSiteScene(siteId: string): Promise<SolixSiteScene> {
+    return this.authed<SolixSiteScene>("POST", SOLIX_ENDPOINTS.getSiteScene, { site_id: siteId });
   }
 
   /**
@@ -377,5 +458,186 @@ export class SolixClient {
    */
   async getProductCatalog(): Promise<SolixProductCategory[]> {
     return (await this.authed<SolixProductCategory[]>("GET", SOLIX_ENDPOINTS.productCategories)) ?? [];
+  }
+
+  /**
+   * Write device attributes — a CONTROL write, e.g. the Solarbank ambient light
+   * `{ ambient_light_switch: 0 | 1 }` (0 = on, 1 = off). Unlike the plain authenticated reads, a write
+   * must be **encrypted + signed** with a freshly negotiated `algo_ecdh` key: the gateway accepts an
+   * unsigned write with `code 0` but the device never applies it. The token-bearing request also must
+   * NOT carry the device id (`openudid`), or the gateway answers `401 token error`. Both verified live
+   * on an AE103 (the LED-enable bit in the `ba` telemetry flips exactly as commanded).
+   */
+  async setDeviceAttrs(deviceSn: string, attributes: Record<string, unknown>): Promise<void> {
+    await this.encryptedWrite(SOLIX_ENDPOINTS.setDeviceAttrs, "set_device_attrs", {
+      device_sn: deviceSn,
+      attributes,
+    });
+  }
+
+  /**
+   * A CONTROL write: `algo_ecdh`-encrypted + signed, token-bearing but WITHOUT `openudid`. Every device
+   * control the account performs (set_device_attrs, set_power_cutoff, …) goes through this — the gateway
+   * accepts an unsigned/plain write with `code 0` but the device never applies it, and adding `openudid`
+   * to the token-bearing request returns `401 token error`. Both verified live on an AE103.
+   */
+  private async encryptedWrite(path: string, label: string, payload: Record<string, unknown>): Promise<void> {
+    if (!this.session_) throw new Error("not authenticated — call login() first");
+    const kx = await this.keyExchange();
+    const encBody = encryptBody(JSON.stringify(payload), kx.shareKey);
+    const ts = nowSec();
+    const once = genId();
+    const env = await this.post(
+      this.apiHost,
+      path,
+      encBody,
+      this.baseHeaders({
+        "x-encryption-info": "algo_ecdh",
+        "x-key-ident": kx.keyIdent,
+        "x-request-ts": ts,
+        "x-request-once": once,
+        "x-signature": signRequest(kx.shareKey, ts, once, encBody),
+        "x-auth-token": this.session_.authToken,
+        gtoken: this.session_.gtoken,
+      }),
+    );
+    if (env.code !== 0) throw new Error(`Solix ${label} failed (${env.code}): ${env.msg}`);
+  }
+
+  /** Turn the Solarbank's ambient LED on/off — a confirmed `set_device_attrs` write. */
+  async setAmbientLight(deviceSn: string, on: boolean): Promise<void> {
+    await this.setDeviceAttrs(deviceSn, { ambient_light_switch: on ? 0 : 1 });
+  }
+
+  /**
+   * Read device attributes — a plain authenticated read (unlike the encrypted write). `attributes`
+   * names the keys to fetch (e.g. `["screen_off_time"]`); an empty list asks for the device's default
+   * set. Returns the gateway's attribute map as-is (values are device-typed — numbers, strings). Used
+   * to reflect a control's live state, e.g. the display/light off-timeout.
+   */
+  async getDeviceAttrs(deviceSn: string, attributes: string[] = []): Promise<Record<string, unknown>> {
+    const data = await this.authed<{ attributes?: Record<string, unknown> } | Record<string, unknown>>(
+      "POST",
+      SOLIX_ENDPOINTS.getDeviceAttrs,
+      { device_sn: deviceSn, attributes },
+    );
+    // The gateway may wrap the map under `attributes` or return it flat — normalise to the flat map.
+    if (data && typeof data === "object" && "attributes" in data && data.attributes) {
+      return data.attributes as Record<string, unknown>;
+    }
+    return (data ?? {}) as Record<string, unknown>;
+  }
+
+  /**
+   * Set the Solarbank display's screen-off timeout, in SECONDS (`screen_off_time`). The app's picker
+   * offers 10/20/30 s and 1/5/30 min; the LCD backlight — and with it the ambient LED that the screen
+   * gates — turns off after this idle period. This is the raw-seconds write; the caller maps its own UI
+   * options to seconds. The "Never" (always-on) sentinel is device-defined and NOT assumed here — pass
+   * the exact integer read back from {@link getDeviceAttrs} while the device is in that mode.
+   */
+  async setScreenOffTime(deviceSn: string, seconds: number): Promise<void> {
+    await this.setDeviceAttrs(deviceSn, { screen_off_time: seconds });
+  }
+
+  /**
+   * Read the Solarbank's battery discharge-cutoff (minimum-SOC) options — a plain authed read.
+   * The gateway returns a preset list (`power_cutoff_data`): each entry is a selectable minimum
+   * state-of-charge `output_cutoff_data` (percent) with its `id` and `is_selected` flag. The caller
+   * presents these options and writes the chosen `id` back via {@link setPowerCutoff} — the values and
+   * ids come from the device, never assumed. `siteId` is optional (the device knows its own cutoff).
+   */
+  async getPowerCutoff(deviceSn: string, siteId = ""): Promise<SolixPowerCutoffOption[]> {
+    const data = await this.authed<{ power_cutoff_data?: SolixPowerCutoffOption[] }>(
+      "POST",
+      SOLIX_ENDPOINTS.getPowerCutoff,
+      { site_id: siteId, device_sn: deviceSn },
+    );
+    return data?.power_cutoff_data ?? [];
+  }
+
+  /**
+   * Select the Solarbank's battery discharge-cutoff (minimum SOC) by option id — a control write.
+   * `cutoffDataId` MUST be an `id` returned by {@link getPowerCutoff} for this device (the preset the
+   * user picked), never a raw percentage; the gateway maps the id to its cutoff percent.
+   */
+  async setPowerCutoff(deviceSn: string, cutoffDataId: number): Promise<void> {
+    await this.encryptedWrite(SOLIX_ENDPOINTS.setPowerCutoff, "set_power_cutoff", {
+      device_sn: deviceSn,
+      cutoff_data_id: cutoffDataId,
+    });
+  }
+
+  /** The `param_type` under which the Solarbank's SOC-limit block lives (verified live on an AE103). */
+  private static readonly SOC_PARAM_TYPE = "27";
+  /** `cmd` value that scopes the `site/*_site_device_param` family (from the app's request builder). */
+  private static readonly SITE_DEVICE_PARAM_CMD = 246;
+
+  /**
+   * Read one of a site's "device param" blocks by `param_type` — a plain authenticated read whose
+   * `data.param_data` is itself a JSON STRING (the vendor double-encodes it). Returns the parsed inner
+   * object, or `{}` when the block is empty (the gateway answers `code 0` with an empty `param_data`
+   * for a `param_type` that does not apply to the site's hardware). The caller owns the inner shape.
+   */
+  private async getSiteDeviceParam(siteId: string, paramType: string): Promise<Record<string, unknown>> {
+    const data = await this.authed<{ param_data?: string }>("POST", SOLIX_ENDPOINTS.getSiteDeviceParam, {
+      site_id: siteId,
+      param_type: paramType,
+      cmd: SolixClient.SITE_DEVICE_PARAM_CMD,
+    });
+    const raw = data?.param_data;
+    if (!raw) return {};
+    try {
+      return JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      return {};
+    }
+  }
+
+  /**
+   * Read the Solarbank's battery SOC-limit settings (`param_type "27"`) — a plain authenticated read.
+   * Returns `undefined` when the site carries no SOC block (e.g. non-Solarbank hardware). The realtime
+   * `dischargeLowerLimit` also arrives on the MQTT `b5` telemetry blob; this is the authoritative,
+   * app-synced source (and the only source for `chargeUpperLimit` / `backupReserve`). Verified live
+   * against a known AE103 setting (discharge 20 / charge 80).
+   */
+  async getSafetySocParams(siteId: string): Promise<SolixSocParams | undefined> {
+    const p = await this.getSiteDeviceParam(siteId, SolixClient.SOC_PARAM_TYPE);
+    if (typeof p.charge_upper_limit !== "number" || typeof p.discharge_lower_limit !== "number") {
+      return undefined;
+    }
+    return {
+      chargeUpperLimit: p.charge_upper_limit,
+      dischargeLowerLimit: p.discharge_lower_limit,
+      backupReserve: typeof p.backup_reserve === "number" ? p.backup_reserve : 0,
+      backupReserveSwitch: typeof p.backup_reserve_switch === "number" ? p.backup_reserve_switch : 0,
+      socCalibrationEnable: typeof p.soc_calibration_enable === "number" ? p.soc_calibration_enable : 0,
+    };
+  }
+
+  /**
+   * Write the Solarbank's battery SOC limits — an `algo_ecdh`-encrypted + signed control write. This is
+   * **read-modify-write**: it first reads the current `param_type "27"` block and overlays only the
+   * fields the caller supplies, so changing the discharge limit alone never clobbers the charge limit,
+   * backup reserve, or calibration toggle. `changes` values are whole-percent integers. The full block
+   * (all five keys) is sent, matching the app's `SocSettingParam.toJson`. Throws if the site has no SOC
+   * block to modify. Returns the merged parameters that were written (for an immediate optimistic echo).
+   */
+  async setSafetySocParams(siteId: string, changes: Partial<SolixSocParams>): Promise<SolixSocParams> {
+    const current = await this.getSafetySocParams(siteId);
+    if (!current) throw new Error(`Solix set SOC params: site has no param_type 27 block`);
+    const merged: SolixSocParams = { ...current, ...changes };
+    await this.encryptedWrite(SOLIX_ENDPOINTS.setSiteDeviceParam, "set_site_device_param", {
+      site_id: siteId,
+      cmd: SolixClient.SITE_DEVICE_PARAM_CMD,
+      param_type: SolixClient.SOC_PARAM_TYPE,
+      param_data: JSON.stringify({
+        charge_upper_limit: merged.chargeUpperLimit,
+        discharge_lower_limit: merged.dischargeLowerLimit,
+        backup_reserve_switch: merged.backupReserveSwitch,
+        backup_reserve: merged.backupReserve,
+        soc_calibration_enable: merged.socCalibrationEnable,
+      }),
+    });
+    return merged;
   }
 }

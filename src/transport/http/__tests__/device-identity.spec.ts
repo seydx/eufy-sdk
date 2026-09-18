@@ -51,3 +51,27 @@ describe("device identity resolution", () => {
     expect(c.mediaUserAgent).toBe("EXPLICIT-UA");
   });
 });
+
+describe("acting account name", () => {
+  const name = (cfg: { email?: string; accountName?: string }) =>
+    new MegaHttpClient({ email: "someone+tag@example.com", password: "x", store: new MemorySessionStore(), ...cfg })
+      .accountName;
+
+  it("defaults to the login email's local-part", () => {
+    expect(name({})).toBe("someone+tag");
+  });
+
+  it("falls back to the whole string when the email has no @", () => {
+    expect(name({ email: "someone" })).toBe("someone");
+  });
+
+  it("a configured name wins over the email", () => {
+    expect(name({ accountName: "Front Desk" })).toBe("Front Desk");
+  });
+
+  it("trims a configured name, and treats a blank one as unset", () => {
+    expect(name({ accountName: "  Front Desk  " })).toBe("Front Desk");
+    expect(name({ accountName: "   " })).toBe("someone+tag");
+    expect(name({ accountName: "" })).toBe("someone+tag");
+  });
+});

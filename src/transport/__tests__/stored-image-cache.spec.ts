@@ -257,6 +257,69 @@ describe("StoredImageCache", () => {
     expect(JSON.stringify(warnings)).not.toMatch(/secret|response|https|device/);
   });
 
+  it("names the download failure when the error carries this SDK's own tag", async () => {
+    const { log, warnings } = logger();
+    const cache = new StoredImageCache(async () => {
+      throw Object.assign(new Error("Media download failed"), { mediaFailure: "http-status", status: 404 });
+    }, log);
+
+    cache.observe("device-a", "https://media.example/missing");
+    await flush();
+
+    expect(warnings[0]?.[1]).toMatchObject({ class: "download-failed", cause: "http-status", status: 404 });
+  });
+
+  it("names a decode failure as a decode failure, not as a network one", async () => {
+    const { log, warnings } = logger();
+    const cache = new StoredImageCache(async () => {
+      throw Object.assign(new Error("Push image could not be decoded"), { mediaFailure: "decode-failed" });
+    }, log);
+
+    cache.observe("device-a", "https://media.example/undecodable");
+    await flush();
+
+    expect(warnings[0]?.[1]).toMatchObject({ class: "download-failed", cause: "decode-failed" });
+    expect(warnings[0]?.[1]).not.toHaveProperty("status");
+  });
+
+  it("drops a tag that is not one of this SDK's terms, however it is dressed up", async () => {
+    const { log, warnings } = logger();
+    const cache = new StoredImageCache(async (url) => {
+      throw Object.assign(new Error("boom"), { mediaFailure: `secret response from ${url}`, status: "404" });
+    }, log);
+
+    cache.observe("device-a", "https://secret.example/first");
+    await flush();
+
+    expect(warnings[0]?.[1]).toEqual({ class: "download-failed", observedAt: expect.any(Number), retained: false });
+    expect(JSON.stringify(warnings)).not.toMatch(/secret|response|https/);
+  });
+
+  it("remembers a bounded window of attempted URLs rather than every URL forever", async () => {
+    const attempts: string[] = [];
+    const cache = new StoredImageCache(async (url) => {
+      attempts.push(url);
+      return jpeg(url);
+    }, logger().log);
+
+    // One more than the window, so the first URL is the one pushed out of it.
+    for (let i = 0; i < 65; i++) {
+      cache.observe("device-a", `https://media.example/${i}`);
+      await flush();
+    }
+    const beforeRepeat = attempts.length;
+
+    // Still inside the window: a repeat is recognised and not downloaded again.
+    cache.observe("device-a", "https://media.example/64");
+    await flush();
+    expect(attempts).toHaveLength(beforeRepeat);
+
+    // Pushed out of it: forgotten, so it is attempted again rather than remembered forever.
+    cache.observe("device-a", "https://media.example/0");
+    await flush();
+    expect(attempts).toHaveLength(beforeRepeat + 1);
+  });
+
   it("emits the same failure class again after the diagnostic interval", async () => {
     const { log, warnings } = logger();
     let now = 0;

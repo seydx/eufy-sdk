@@ -30,4 +30,31 @@ export const SOLIX_ENDPOINTS = {
   getUserMqttInfo: "/v1/openapi/devicemanage/get_user_mqtt_info",
   /** GET: the pairable-product catalog (categories → products), for labelling model codes. */
   productCategories: "/power_service/v1/product_categories",
+  /** POST (encrypted+signed): write device attributes, e.g. `{ambient_light_switch: 0|1}`. */
+  setDeviceAttrs: "/power_service/v1/app/device/set_device_attrs",
+  /** POST (plain authed): read device attributes, e.g. the display `screen_off_time` (seconds). */
+  getDeviceAttrs: "/power_service/v1/app/device/get_device_attrs",
+  /** POST (plain authed): the battery discharge-cutoff (minimum-SOC) preset options. */
+  getPowerCutoff: "/power_service/v1/app/compatible/get_power_cutoff",
+  /** POST (encrypted+signed): select the discharge-cutoff preset by `cutoff_data_id`. */
+  setPowerCutoff: "/power_service/v1/app/compatible/set_power_cutoff",
+  /**
+   * POST (plain authed): the site "scene" snapshot — the same clean Solarbank/grid telemetry the app
+   * reads on load/refresh. Used as a low-rate BACKSTOP for the fields the realtime `ff09` push doesn't
+   * carry reliably (notably `bat_temperature`), NOT as the realtime source (that is the MQTT push).
+   */
+  getSiteScene: "/power_service/v2/site/platform_get_site_scene",
+  /**
+   * POST (plain authed): read a site "device param" block by `param_type`. Body is
+   * `{ site_id, param_type, cmd: 246 }`; the response's `data.param_data` is a JSON STRING the caller
+   * parses. The Solarbank's SOC-limit settings live under `param_type "27"` (charge/discharge limits,
+   * backup reserve) — verified live on an AE103 (`"18"` returns empty for this device).
+   */
+  getSiteDeviceParam: "/power_service/v1/site/get_site_device_param",
+  /**
+   * POST (encrypted+signed): write a site "device param" block. Body is
+   * `{ site_id, cmd: 246, param_type, param_data: <JSON string> }`. Used for the SOC-limit write
+   * (`param_type "27"`, `param_data` = the SocSettingParam map) — see {@link SolixClient.setSafetySocParams}.
+   */
+  setSiteDeviceParam: "/power_service/v1/site/set_site_device_param",
 } as const;

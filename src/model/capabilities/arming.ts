@@ -175,9 +175,9 @@ function armingModeOf(v: boolean | number | string): ArmingMode | undefined {
 /**
  * Build the {@link ARMING_CMD.SET_ARMING} write intent, or throw if the context has no account
  * identity. `user_name` — the real app's own capture showed a MASKED value (`"max***"`, presumably
- * the app's own privacy-display truncation of the account's email local-part), not the raw
- * local-part `ctx.accountName` holds. Untested whether the device validates this field strictly;
- * sending our real (unmasked) identity is the more correct choice regardless — it's almost certainly
+ * the app's own privacy-display truncation of the account's email local-part), not the unmasked
+ * acting name `ctx.accountName` carries. Untested whether the device validates this field strictly;
+ * sending the acting name as it stands is the more correct choice regardless — it's almost certainly
  * just attribution (e.g. "who armed the system" in event history), not a value the device checks
  * against anything.
  */

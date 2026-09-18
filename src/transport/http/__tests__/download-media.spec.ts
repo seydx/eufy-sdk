@@ -15,6 +15,7 @@ const AUTHENTICATED_HEADERS = {
 function sessionStore(): SessionStore {
   const session: PersistedSession = {
     userId: "synthetic-user",
+    accountUserId: "synthetic-user",
     authToken: "synthetic-token",
     region: "us-pr",
     openudid: "0000000000000000",
@@ -231,6 +232,52 @@ describe("downloadMediaResource", () => {
     await rejection;
   });
 
+  /**
+   * The tag is the only thing that makes a failed thumbnail diagnosable: the messages deliberately say
+   * nothing, so without it every one of these paths reads as the same `download-failed` in a log.
+   */
+  it.each([
+    { what: "a URL the allowlist refuses", tag: "url-not-allowed", status: undefined },
+    { what: "a host that resolves privately", tag: "address-not-public", status: undefined },
+    { what: "a redirect the allowlist refuses", tag: "redirect-not-allowed", status: undefined },
+    { what: "a status that is not 200", tag: "http-status", status: 404 },
+    { what: "a body over the bound", tag: "too-large", status: undefined },
+    { what: "a request that fails outright", tag: "network", status: undefined },
+  ])("tags $what as $tag", async ({ tag, status }) => {
+    const media = "https://security-app.eufylife.com/media";
+    let attempt: Promise<Buffer>;
+    if (tag === "url-not-allowed") {
+      attempt = download("https://evil.example/media", fetchMock());
+    } else if (tag === "address-not-public") {
+      lookup.mockResolvedValue([{ address: "127.0.0.1", family: 4 }]);
+      attempt = download(media, fetchMock());
+    } else if (tag === "redirect-not-allowed") {
+      attempt = download(media, fetchMock(redirect("https://evil.example/object")));
+    } else if (tag === "http-status") {
+      attempt = download(media, fetchMock(new Response(null, { status: 404 })));
+    } else if (tag === "too-large") {
+      attempt = download(
+        media,
+        fetchMock(new Response("x", { status: 200, headers: { "content-length": String(TEN_MIB + 1) } })),
+      );
+    } else {
+      attempt = download(media, vi.fn<typeof fetch>().mockRejectedValue(new TypeError("fetch failed")));
+    }
+
+    const error = (await attempt.catch((e: unknown) => e)) as { mediaFailure?: string; status?: number };
+    expect(error.mediaFailure).toBe(tag);
+    expect(error.status).toBe(status);
+  });
+
+  it("tags a timeout as a timeout rather than as a failed request", async () => {
+    vi.useFakeTimers();
+    lookup.mockImplementationOnce(() => new Promise(() => undefined));
+    const attempt = download("https://security-app.eufylife.com/media", fetchMock()).catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(15_000);
+
+    expect((await attempt) as { mediaFailure?: string }).toMatchObject({ mediaFailure: "timeout" });
+  });
+
   it("does not expose URLs, response bodies, identifiers, or tokens in errors", async () => {
     const url = "https://security-app.eufylife.com/media/private-device-id";
     const fetch = fetchMock(new Response("private-response-body synthetic-token", { status: 403 }));
@@ -278,5 +325,31 @@ describe("MegaHttpClient.downloadMedia", () => {
     await expect(client().downloadMedia("https://security-app.eufylife.com/media")).rejects.toBeInstanceOf(
       SessionExpiredError,
     );
+  });
+
+  /**
+   * Bytes that arrive and will not decrypt are a DIFFERENT fault from bytes that never arrive — a key
+   * or a wrapper the SDK got wrong, not a network or a host — and a caller that logs one tag for both
+   * cannot tell which it is looking at. The blob here is a v1 wrapper whose payload is not a whole
+   * number of cipher blocks, which is what the decoder throws on.
+   */
+  it("tags a push image that will not decode as a decode failure, not a download one", async () => {
+    const wrapper = Buffer.from("eufysecurity:T8000TEST00000002:0000000000:", "latin1");
+    const body = Buffer.concat([wrapper, Buffer.alloc(20, 7)]);
+    vi.stubGlobal("fetch", fetchMock(new Response(body, { status: 200 })));
+
+    const error = (await client()
+      .downloadImage("https://security-app.eufylife.com/media", "T8010-0000000-ABCDE")
+      .catch((e: unknown) => e)) as { mediaFailure?: string; message?: string };
+
+    expect(error.mediaFailure).toBe("decode-failed");
+    expect(error.message).toBe("Push image could not be decoded");
+  });
+
+  it("leaves a downloaded image that decodes alone", async () => {
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0xff, 0xd9]);
+    vi.stubGlobal("fetch", fetchMock(new Response(jpeg, { status: 200 })));
+
+    await expect(client().downloadImage("https://security-app.eufylife.com/media")).resolves.toEqual(jpeg);
   });
 });

@@ -266,7 +266,11 @@ export interface CommandContext extends AvailabilityContext {
   adminUserId?: string;
   /** The acting member's short id (`member.short_user_id`, hex, e.g. `"0003"`) — the lock cmd `A5` field. */
   shortUserId?: string;
-  /** The logged-in account's display name (email local-part) — the lock cmd acting-username `A4` field. */
+  /**
+   * The acting name a command attributes itself to — the lock cmd acting-username `A4` field, and the
+   * `user_name` of the guard-mode and HomeBase-alarm writes. The logged-in account's display name
+   * (email local-part) unless the client pins a different label for it.
+   */
   accountName?: string;
   /**
    * Whether the device has a usable P2P endpoint (a non-empty `p2p_did`). A HomeBase-attached lock

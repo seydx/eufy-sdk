@@ -69,6 +69,7 @@ describe("logger injection", () => {
   it("a component routes its diagnostics to the injected logger (MegaHttpClient session restore)", () => {
     const session: PersistedSession = {
       userId: "u-0000",
+      accountUserId: "u-0000",
       authToken: "tok",
       region: "eu-pr",
       openudid: "0000000000000000",

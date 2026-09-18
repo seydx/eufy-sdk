@@ -28,7 +28,7 @@ import {
 import { MemorySessionStore, isSessionValid, type SessionStore } from "../../core/store.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import type { SecureMqttCredentials } from "../mqtt/secure-mqtt.js";
-import { downloadMediaResource, MediaDownloadAuthenticationError } from "./media-download.js";
+import { downloadMediaResource, mediaFailureError, MediaDownloadAuthenticationError } from "./media-download.js";
 import { randomPhoneModel, randomUserAgent } from "./phone-model.js";
 import { normalizePushImage } from "./decodeImageV1.js";
 
@@ -63,6 +63,14 @@ export interface MegaClientConfig {
    * an explicit value pins a fixed one. Not the account identity — that's `phoneModel`.
    */
   mediaUserAgent?: string;
+  /**
+   * Acting name written into the commands that carry an actor field — guard mode and HomeBase alarm
+   * output (`user_name`), a lock's acting username. Trimmed, and blank counts as unset: the default
+   * is the login email's local-part (the whole string when it has no `@`). Attribution only — the
+   * device stores it for its own activity record, and no captured frame shows it being validated
+   * against the account.
+   */
+  accountName?: string;
   /** Persist + reuse the session (token + session key) across runs. Default: in-memory. */
   store?: SessionStore;
   /** Diagnostics sink. Omit for silence; pass a `Logger` (or `new ConsoleLogger()`) to see logs. */
@@ -241,11 +249,23 @@ const CONTENDED_SESSION_HINT =
  * The subject-less wordings are anchored to a token or a session: a bare `does not exist` also occurs in the
  * serialised detail of rejections that have nothing to do with the credential, and clearing a healthy session
  * on one of those costs a re-2FA.
+ *
+ * Two properties of the match keep those anchors on their own subject, and
+ * `"token = …, gtoken not equal userid error"` — a HEADER fault on a token that is fine, which no re-login can
+ * repair — needs both:
+ *  - a wildcard cannot cross a comma, so it stays inside the clause its anchor sits in and cannot borrow a
+ *    word from the next one;
+ *  - `token` matches as a whole word, so `gtoken` — a different header with a different meaning — is not read
+ *    as the credential.
+ *
+ * Both are bounds on the match rather than edits to the message: the echoed credential still carries the
+ * anchor for wordings that state their reason beside it (`"token = … expired"`), so removing the echo before
+ * matching would lose a real expiry and leave a dead session uncleared.
  */
 function tokenRejected(code: number | undefined, msg: string | undefined): boolean {
   return (
     code === EufyCloudErrorCode.SESSION_KICKED ||
-    /user_id is empty|invalid.*token|token.*(expired|error|not exist)|kicked|(?:token|session).*does not exist|unauthor/i.test(
+    /user_id is empty|invalid[^,]*\btoken\b|\btoken\b[^,]*(expired|error|not exist)|kicked|(?:\btoken\b|\bsession\b)[^,]*does not exist|unauthor/i.test(
       msg ?? "",
     )
   );
@@ -285,7 +305,14 @@ export class MegaHttpClient {
   private sessionKey?: SessionEntry;
   /** Per-host ECDH session keys for non-mega gateways (e.g. eufylife) keyed by host. */
   private readonly sessionKeys = new Map<string, SessionEntry>();
-  private auth_?: { userId: string; authToken: string; geoKey?: string };
+  /**
+   * The held credential. `userId` is the login reply's `ap_cloud_user_id` where it has one — the Anker
+   * Passport cloud's id — while `accountUserId` is the eufy account's own `user_id`.
+   *
+   * The `gtoken` header is hashed from `accountUserId`: that is the id the gateway recomputes the header
+   * from, rejecting a disagreement with `"gtoken not equal userid error"`.
+   */
+  private auth_?: { userId: string; authToken: string; geoKey?: string; accountUserId?: string };
   /** captcha_id of an in-flight challenge, held between login() and solveCaptcha(). */
   private pendingCaptchaId?: string;
   /** True while a 2FA code is outstanding: `auth_` holds only the limited pre-verify token, so the
@@ -360,7 +387,12 @@ export class MegaHttpClient {
     const saved = this.store.load();
     if (!isSessionValid(saved) || !saved) return undefined;
     this.region = saved.region;
-    this.auth_ = { userId: saved.userId, authToken: saved.authToken, geoKey: saved.geoKey };
+    this.auth_ = {
+      userId: saved.userId,
+      accountUserId: saved.accountUserId,
+      authToken: saved.authToken,
+      geoKey: saved.geoKey,
+    };
     this.tokenExpiresAt = saved.tokenExpiresAt;
     this.sessionKey = {
       keyIdent: saved.keyIdent,
@@ -383,12 +415,19 @@ export class MegaHttpClient {
   }
 
   /**
-   * The logged-in account's display name — the login email's local-part (e.g. `someone+tag` for
-   * `someone+tag@example.com`). This is the string the app writes into the ff09 command's acting
-   * "username" field (verified against a captured T8531 unlock frame). Falls back to the whole email
-   * if it has no `@`.
+   * The name commands attribute themselves to — {@link MegaClientConfig.accountName} when the config
+   * pins one (trimmed; blank counts as unset), otherwise the logged-in account's display name, which
+   * is the login email's local-part (e.g. `someone+tag` for `someone+tag@example.com`) and falls back
+   * to the whole email if it has no `@`.
+   *
+   * The local-part is the string the app writes into the ff09 command's acting "username" field
+   * (verified against a captured T8531 unlock frame), so it is the faithful default. An override is a
+   * different LABEL for the same account, not a different identity: the session authenticates on the
+   * token and the device record's member ids, neither of which this touches.
    */
   get accountName(): string {
+    const pinned = this.cfg.accountName?.trim();
+    if (pinned) return pinned;
     const email = this.cfg.email ?? "";
     const at = email.indexOf("@");
     return at > 0 ? email.slice(0, at) : email;
@@ -428,7 +467,17 @@ export class MegaHttpClient {
   }
 
   /**
-   * The account-credential headers every authed call carries — `x-auth-token` + `gtoken` (`md5(userId)`).
+   * The id `gtoken` is hashed from — the account's own `user_id`, which is what the gateway recomputes the
+   * header from. One place so the two header paths cannot drift on which of the session's ids that is.
+   *
+   * Call only where `auth_` is already established; every header path guards it.
+   */
+  private gtokenUserId(): string {
+    return this.auth_!.accountUserId ?? this.auth_!.userId;
+  }
+
+  /**
+   * The account-credential headers every authed call carries — `x-auth-token` + `gtoken`.
    * One place so the signed path, the key-exchange and the bearer path can't drift on what "authed" means.
    */
   private authTokenHeaders(): Record<string, string> {
@@ -436,7 +485,7 @@ export class MegaHttpClient {
     return {
       "x-auth-token": this.auth_.authToken,
       authorization: this.auth_.authToken,
-      gtoken: gtoken(this.auth_.userId),
+      gtoken: gtoken(this.gtokenUserId()),
     };
   }
 
@@ -822,7 +871,7 @@ export class MegaHttpClient {
     try {
       return await downloadMediaResource(url, {
         "x-auth-token": this.auth_.authToken,
-        gtoken: gtoken(this.auth_.userId),
+        gtoken: gtoken(this.gtokenUserId()),
         "app-name": "eufy_mega",
         "model-type": "PHONE",
         "user-agent": this.mediaUserAgent,
@@ -835,9 +884,20 @@ export class MegaHttpClient {
     }
   }
 
-  /** Download push image bytes and decrypt a recognized v1 wrapper when its device key input is available. */
+  /**
+   * Download push image bytes and decrypt a recognized v1 wrapper when its device key input is available.
+   *
+   * A decoder throw is tagged `decode-failed`: to anything downstream, the difference between "the
+   * bytes never arrived" and "the bytes arrived and the wrapper would not decrypt" is the difference
+   * between a network problem and a key problem, and one of them is this SDK's to fix.
+   */
   async downloadImage(url: string, p2pDid?: string): Promise<Buffer> {
-    return normalizePushImage(await this.downloadMedia(url), p2pDid);
+    const data = await this.downloadMedia(url);
+    try {
+      return normalizePushImage(data, p2pDid);
+    } catch (error) {
+      throw mediaFailureError("Push image could not be decoded", "decode-failed", error);
+    }
   }
 
   /** The security-app data host for this region (face recognition, media, etc.). */
@@ -1157,10 +1217,12 @@ export class MegaHttpClient {
     {
       const cap = Object.keys(res).filter((k) => /captcha|answer|picture|image|fa_/i.test(k));
       this.logger.debug("[mega] login resp keys:", Object.keys(res).join(","));
+      this.logger.debug("[mega] ids agree:", res.ap_cloud_user_id === res.user_id);
       if (cap.length)
         this.logger.debug("[mega] captcha/fa:", JSON.stringify(Object.fromEntries(cap.map((k) => [k, res[k]]))));
     }
     const userId = (res.ap_cloud_user_id ?? res.user_id ?? res.userId) as string | undefined;
+    const accountUserId = (res.user_id ?? res.userId) as string | undefined;
     const authToken = (res.auth_token ?? res.token) as string | undefined;
     if (!userId || !authToken) throw new Error(`login returned no session: ${JSON.stringify(res).slice(0, 200)}`);
 
@@ -1171,7 +1233,7 @@ export class MegaHttpClient {
       // Keep the limited token: sendVerifyCode() AND the follow-up verify-login must both be authed
       // with it (captured: attempts 4 & 5 carry this token), so the gateway links the code to this
       // pending 2FA session.
-      this.auth_ = { userId, authToken, geoKey: res.geo_key as string | undefined };
+      this.auth_ = { userId, accountUserId, authToken, geoKey: res.geo_key as string | undefined };
       // Captcha (if any) is satisfied once we reach the 2FA step — drop its id so a later retry
       // doesn't resubmit an already-consumed challenge. Mark 2FA outstanding (see login()).
       this.pendingCaptchaId = undefined;
@@ -1182,7 +1244,7 @@ export class MegaHttpClient {
 
     this.pendingCaptchaId = undefined;
     this.pending2fa = false;
-    this.auth_ = { userId, authToken, geoKey: res.geo_key as string | undefined };
+    this.auth_ = { userId, accountUserId, authToken, geoKey: res.geo_key as string | undefined };
     this.tokenExpiresAt = Number(res.token_expires_at ?? 0) || 0;
     // Re-exchange WITH the auth token so the gateway binds the key-ident to the user.
     this.sessionKey = undefined;
@@ -1196,6 +1258,7 @@ export class MegaHttpClient {
     if (!this.auth_ || !this.sessionKey) return;
     this.store.save({
       userId: this.auth_.userId,
+      accountUserId: this.auth_.accountUserId ?? this.auth_.userId,
       authToken: this.auth_.authToken,
       geoKey: this.auth_.geoKey,
       region: this.region,

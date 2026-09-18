@@ -35,7 +35,7 @@ function serverKeyExchange(clientPublicKeyB64: string): { serverPublicKey: strin
  * Build a fetch double for the Solix cloud. `faInfo` drives the 2FA branch: non-empty on the first
  * login, empty (satisfied) once a verify_code is present.
  */
-function makeServer(opts: { devices?: unknown[]; twoFactor?: boolean } = {}): {
+function makeServer(opts: { devices?: unknown[]; sites?: unknown[]; twoFactor?: boolean } = {}): {
   fetchImpl: typeof fetch;
   calls: { path: string; headers: Record<string, string> }[];
 } {
@@ -69,7 +69,8 @@ function makeServer(opts: { devices?: unknown[]; twoFactor?: boolean } = {}): {
     }
     if (u.pathname.endsWith("/get_relate_and_bind_devices"))
       return reply({ code: 0, msg: "success!", data: { data: opts.devices ?? [] } });
-    if (u.pathname.endsWith("/get_site_list")) return reply({ code: 0, msg: "success!", data: { site_list: [] } });
+    if (u.pathname.endsWith("/get_site_list"))
+      return reply({ code: 0, msg: "success!", data: { site_list: opts.sites ?? [] } });
     if (u.pathname.endsWith("/product_categories"))
       return reply({
         code: 0,
@@ -122,6 +123,20 @@ describe("SolixClient", () => {
     expect(read.headers["x-encryption-info"]).toBeUndefined(); // reads are PLAIN
     // The gateway rejects a token-bearing read that also carries a device id — reads must omit it.
     expect(read.headers["openudid"]).toBeUndefined();
+  });
+
+  it("getSites drops any record without a usable site_id (the field a SolixSite keys on)", async () => {
+    const { fetchImpl } = makeServer({
+      sites: [
+        { site_id: "s-1", site_name: "My Home" },
+        { site_name: "No id — must be filtered" }, // no site_id
+        { site_id: "", site_name: "Empty id — must be filtered" },
+      ],
+    });
+    const client = new SolixClient({ email: "a@b.co", password: "pw", fetchImpl });
+    await client.login();
+    const sites = await client.getSites();
+    expect(sites.map((s) => s.site_id)).toEqual(["s-1"]);
   });
 
   it("surfaces a 2FA challenge and completes it with submitVerifyCode", async () => {

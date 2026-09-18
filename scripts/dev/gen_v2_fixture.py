@@ -8,7 +8,13 @@ therefore build a synthetic image, encode it as a standard 4:4:4 baseline JPEG (
 the separate DC/AC chroma DHT segments the decoder relies on), prepend a synthetic serial, and base64
 it. Pillow is a dev-time tool only; it is NOT a runtime dependency of the SDK.
 
-    python3 scripts/dev/gen_v2_fixture.py <width> <height> <out.b64>
+    python3 scripts/dev/gen_v2_fixture.py <width> <height> <out.b64> [quality] [subsampling]
+
+`quality` (default 85) and `subsampling` (0 = 4:4:4, 1 = 4:2:2, 2 = 4:2:0; default 0) are what the
+decoder has to RECOVER — the quality because the camera's quant tables are lost with the encrypted
+head, and the subsampling because it decides how the scan's blocks are interleaved. A fixture at a
+quality well below the decoder's reference table is what "foggy" means, and is the one that shows the
+contrast recovery doing anything.
 """
 import base64
 import sys
@@ -36,16 +42,18 @@ def synthetic_image(w: int, h: int) -> Image.Image:
 
 
 def main() -> None:
-    """Write a 4:4:4 baseline JPEG with the split DHT layout expected by the decoder."""
+    """Write a baseline JPEG with the split DHT layout expected by the decoder."""
     w, h, out = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3]
+    quality = int(sys.argv[4]) if len(sys.argv) > 4 else 85
+    subsampling = int(sys.argv[5]) if len(sys.argv) > 5 else 0
     from io import BytesIO
 
     buf = BytesIO()
-    synthetic_image(w, h).save(buf, format="JPEG", quality=85, subsampling=0)
+    synthetic_image(w, h).save(buf, format="JPEG", quality=quality, subsampling=subsampling)
     blob = SYNTHETIC_SERIAL + buf.getvalue()
     with open(out, "w") as f:
         f.write(base64.b64encode(blob).decode())
-    print(f"wrote {out}: {len(blob)} bytes ({w}x{h}, synthetic)")
+    print(f"wrote {out}: {len(blob)} bytes ({w}x{h}, quality {quality}, subsampling {subsampling}, synthetic)")
 
 
 if __name__ == "__main__":

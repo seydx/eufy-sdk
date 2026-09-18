@@ -14,6 +14,7 @@ const IMAGE_URL = "https://security-app.eufylife.com/media/thumbnail.jpg";
 function session(userId = "synthetic-user"): PersistedSession {
   return {
     userId,
+    accountUserId: userId,
     authToken: "synthetic-token",
     region: "us-pr",
     openudid: "0000000000000000",

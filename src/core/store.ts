@@ -17,6 +17,14 @@ import type { RegionShard } from "../transport/http/mega-client.js";
  */
 export interface PersistedSession {
   userId: string;
+  /**
+   * The eufy account's own `user_id` — the id the `gtoken` header is hashed from, which is not always the
+   * `ap_cloud_user_id` that `userId` prefers.
+   *
+   * Always written, equal to `userId` when the login reply carried only the one id. Absent therefore means a
+   * record from before this was tracked, which {@link isSessionValid} refuses rather than restore.
+   */
+  accountUserId?: string;
   authToken: string;
   geoKey?: string;
   region: RegionShard;
@@ -96,8 +104,17 @@ export function tokenNotExpired(tokenExpiresAt: number | undefined, skewSec = 30
   return true;
 }
 
-/** A persisted session is usable if it has a token that isn't (near-)expired. */
+/**
+ * A persisted session is usable if it carries a complete credential — token, bound ECDH key, and the account
+ * id the `gtoken` header is hashed from — whose token isn't (near-)expired.
+ *
+ * `accountUserId` is part of the credential, not an optional extra: a record without it was written before
+ * that id was tracked, so it can only be restored as the other id, which is what the gateway rejects the
+ * header on. Nothing in a restored session can recover it either — the id arrives with a login reply. So such
+ * a record is refused and one login re-establishes it, rather than reinstating a session whose every
+ * authenticated call fails identically.
+ */
 export function isSessionValid(s: PersistedSession | null, skewSec = 300): boolean {
-  if (!s?.authToken || !s.shareKey || !s.keyIdent) return false;
+  if (!s?.authToken || !s.shareKey || !s.keyIdent || !s.accountUserId) return false;
   return tokenNotExpired(s.tokenExpiresAt, skewSec);
 }
