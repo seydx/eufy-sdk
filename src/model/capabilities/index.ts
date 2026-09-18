@@ -321,6 +321,14 @@ export function detectCapabilities(rec: CloudRecord, codec?: Codec): Capability[
       }
     }
 
+    if (matched && d.requires && codec !== undefined) {
+      try {
+        matched = d.requires(rec, codec) === true;
+      } catch {
+        matched = false;
+      }
+    }
+
     if (matched) found.add(m.capability);
   }
 

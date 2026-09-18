@@ -1,6 +1,6 @@
 import { LIGHT, LIGHT_CMD, type LightActions } from "../light.js";
 import { unobservableMembers } from "../members.js";
-import { buildCommand } from "../index.js";
+import { buildCommand, detectCapabilities } from "../index.js";
 import { bind } from "./bind.js";
 import type { CommandContext } from "../types.js";
 import type { Command } from "../../../core/contracts.js";
@@ -34,6 +34,25 @@ const unknownCtx = (channel = 0): CommandContext => ({
   codec: "camera",
   deviceType: 99999,
   paramIds: new Set<number>(),
+});
+
+describe("light detection", () => {
+  it("a battery doorbell that reports the spotlight param gets no light", () => {
+    // T8210: reports 1400, has no lamp, and its switch wire is unconfirmed — a control here would
+    // refuse on every press, so the capability is not granted in the first place.
+    expect(detectCapabilities({ deviceType: 7, params: { 1400: "0" } }, "camera")).not.toContain("light");
+  });
+
+  it("a floodlight cam whose wire is confirmed keeps its light", () => {
+    expect(detectCapabilities({ deviceType: 47, params: { 1400: "0" } }, "camera")).toContain("light");
+    expect(detectCapabilities({ deviceType: 46, params: { 1401: "50" } }, "camera")).toContain("light");
+  });
+
+  it("a model name alone is not enough when the switch wire is unknown", () => {
+    expect(detectCapabilities({ deviceType: 7, deviceName: "Spotlight Cam" } as never, "camera")).not.toContain(
+      "light",
+    );
+  });
 });
 
 describe("light capability module", () => {

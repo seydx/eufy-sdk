@@ -41,6 +41,13 @@ export interface DetectionSpec {
   modelHints?: RegExp[];
   codecs?: Codec[];
   detect?(rec: CloudRecord, codec: Codec): boolean;
+  /**
+   * Checked AFTER a match, and the capability is only granted when it holds. The detection fields
+   * are OR-ed evidence that a device *reports* something; this states what the SDK must know to
+   * actually speak it. A camera that reports a spotlight param whose switch wire is unconfirmed
+   * would otherwise be handed a control that throws on every press.
+   */
+  requires?(rec: CloudRecord, codec: Codec): boolean;
 }
 
 /**
