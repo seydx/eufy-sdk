@@ -30,6 +30,7 @@ import {
   encodeSelectRoomsClean,
   encodeSelectZonesClean,
   encodeSceneClean,
+  encodeCleanParam,
   ModeCtrlParamMethod,
   VACUUM_DP_MESSAGE,
   ModeCtrlMethod,
@@ -670,6 +671,51 @@ describe("decodeCleanParamValue (CleanParam settings beside clean_type)", () => 
   });
 });
 
+/**
+ * `encodeCleanParam` — the write side of DP 154, stated against the same byte fixtures the reads use.
+ *
+ * Expectations are BUILT from those helpers rather than hand-rolled buffers, which is what makes them
+ * an independent statement of the wire: `int` omits a zero and `sub` always emits, and those are the
+ * two proto3 rules the encoder is written to.
+ */
+describe("encodeCleanParam (CleanParamRequest.clean_param, DP 154)", () => {
+  const CONFIGURED = 1;
+  const TYPE = 1;
+  const EXTENT = 3;
+  const MOP = 4;
+  const VALUE = 1;
+
+  it("states all three settings inside one clean_param", () => {
+    expect(encodeCleanParam("mop", "narrow", "high")).toBe(
+      frame(sub(CONFIGURED, [...sub(TYPE, int(VALUE, 1)), ...sub(EXTENT, int(VALUE, 1)), ...sub(MOP, int(VALUE, 2))])),
+    );
+  });
+
+  it("writes a zero member as a present-but-empty wrapper, per proto3", () => {
+    expect(encodeCleanParam("sweep", "normal", "low")).toBe(
+      frame(sub(CONFIGURED, [...sub(TYPE, []), ...sub(EXTENT, []), ...sub(MOP, [])])),
+    );
+  });
+
+  it("states every setting on every write — a CleanParam carries all three", () => {
+    const sent = encodeCleanParam("sweepThenMop", "normal", "high");
+    expect(decodeCleanParamValue(sent, byteCodec, TYPE)).toBe(3);
+    expect(decodeCleanParamValue(sent, byteCodec, EXTENT)).toBe(0);
+    expect(decodeCleanParamValue(sent, byteCodec, MOP)).toBe(2);
+  });
+
+  it("never writes clean_times, so the robot keeps its configured pass count", () => {
+    const CLEAN_TIMES = 7;
+    expect(decodeCleanParamValue(encodeCleanParam("mop", "quick", "high"), byteCodec, CLEAN_TIMES)).toBeUndefined();
+  });
+
+  it("round-trips through the reads that observe it", () => {
+    const sent = encodeCleanParam("sweepAndMop", "quick", "middle");
+    expect(decodeCleanType(sent, byteCodec)).toBe("sweepAndMop");
+    expect(decodeCleanParamValue(sent, byteCodec, EXTENT)).toBe(2);
+  });
+});
+
 describe("CleanParam settings on the bound surface", () => {
   const dps = new Set([VACUUM_DP.CLEAN_PARAM]);
   const payload = frame(
@@ -950,6 +996,18 @@ describe("vacuum_clean — DP-based action routing", () => {
     await acts.returnToDock!();
     await acts.pauseCleaning!();
     expect(sent.every((c) => (c as { dp: number }).dp === VACUUM_DP.MODE_CTRL)).toBe(true);
+  });
+
+  it("setCleanParam dispatches DP 154 — the settings report's own data point, not a mode command", async () => {
+    const { acts, sent } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx("T2351", undefined, aiotDps));
+    await acts.setCleanParam!("mop", "normal", "middle");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ kind: "aiot-dp", dp: VACUUM_DP.CLEAN_PARAM });
+  });
+
+  it("setCleanParam is absent on the Tuya clean line — DP 154 is an AIoT message", () => {
+    const { acts } = bind<VacuumCleanActions>("vacuum_clean", fakeCtx("T2266", "eufy_home_tuya", tuyaDps));
+    expect(acts.setCleanParam).toBeUndefined();
   });
 
   it("setPower is absent on the Tuya clean line — no confirmed power DP there", () => {

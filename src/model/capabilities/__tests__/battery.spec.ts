@@ -261,6 +261,7 @@ describe("battery capability module", () => {
       payload: { charge_mode: 1 },
       channel: 6,
       mValue3: 0,
+      form: "auto",
     });
     // Battery = charge_mode 0.
     expect(buildCommand("powerSource", 0, ctx)).toEqual({
@@ -269,6 +270,7 @@ describe("battery capability module", () => {
       payload: { charge_mode: 0 },
       channel: 6,
       mValue3: 0,
+      form: "auto",
     });
   });
 
@@ -348,7 +350,14 @@ describe("battery capability module", () => {
     ]);
     await acts.setPowerSource!(PowerSource.ExternalSolarPanel);
     await acts.setWorkingMode!(WorkingMode.OptimalBatteryLife); // no ctx.model → DEFAULT map → 0
-    expect(sent[0]).toEqual({ kind: "set-payload", cmd: 1293, payload: { charge_mode: 1 }, channel: 6, mValue3: 0 });
+    expect(sent[0]).toEqual({
+      kind: "set-payload",
+      cmd: 1293,
+      payload: { charge_mode: 1 },
+      channel: 6,
+      mValue3: 0,
+      form: "auto",
+    });
     expect(sent[1]).toEqual({ kind: "set-param", param: 1246, value: 0, form: "direct-binary", channel: 6 });
   });
 

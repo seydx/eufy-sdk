@@ -294,6 +294,8 @@ export const BATTERY_MEMBERS = cellGated({
         { charge_mode: v === "external" ? 1 : v === "battery" ? 0 : asBool(v) ? 1 : 0 },
         ctx,
         0,
+        undefined,
+        "auto",
       ),
   },
   /**

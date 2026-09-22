@@ -132,10 +132,14 @@ is not defensive style — it is the type telling you to check.
 
 **Every mode-control verb below was run on a T2351 and did what it says** — the whole-floor four, and
 the three that take an argument. The two suction setters rest on something different: a data-point write
-the SKU's own catalog confirms, rather than a watched run.
+the SKU's own catalog confirms, rather than a watched run. `setCleanParam` rests on a third thing again:
+the message it sends is the one the robot reports its own settings in, decoded off that same T2351, and
+the write direction has not been watched separately.
 
 Worth separating, because a mode-control write carries a command NUMBER, and a wrong number is a
-different command rather than a failure.
+different command rather than a failure. A settings write has no number to get wrong, and it answers for
+itself: the three reads it changes are on the data point it is sent to, so a frame the robot rejects
+leaves them where they were.
 
 ### Whole-floor verbs
 
@@ -150,6 +154,24 @@ await clean?.returnToDock?.();
 await dev.suction?.()?.setSuctionLevel?.(2); // raw level, see above
 await dev.suction?.()?.setBoostIq?.(true);
 ```
+
+### What a run does with a surface
+
+The cleaning type, how far past the mapped edge a job reaches, and how much water the mop lays down all
+travel in one `CleanParam`, so one verb states all three — and the three reads beside it are how you see
+what took:
+
+```ts
+await clean?.setCleanParam?.("sweepAndMop", "normal", "high");
+
+clean?.cleanType; // "sweepAndMop"
+clean?.cleanExtent; // "normal"
+clean?.mopLevel; // "high"
+```
+
+`cleanExtent` follows the WIRE's order, which is not the order the vendor's app lists these in. Suction
+is not part of this message even though a `fan` field sits in it — it has its own data point, and
+`setSuctionLevel` above is where it is set.
 
 ### Cleaning part of a floor
 

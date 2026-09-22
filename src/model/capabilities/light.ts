@@ -107,6 +107,8 @@ function autoSpotlightCommand(on: boolean, ctx: CommandContext, opts: AutoSpotli
     },
     ctx,
     0,
+    undefined,
+    "auto",
   );
 }
 

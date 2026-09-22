@@ -417,6 +417,10 @@ function privacyCommand(enabled: boolean, channel: number): Command {
  * Every other camera uses `DEV_LED_SWITCH` (1045), level-1 int+string, value 0/1. The doorbell is a
  * `camera`-codec device, so its LED belongs to this one `setStatusLed` surface (swap the wire by
  * family) rather than a duplicate action on the doorbell capability.
+ *
+ * The doorbell branch stays level-2 only: it carries the envelope's default `mValue3` (the sub-command),
+ * which the level-1 form writes as 0 — so `"auto"` here would send an uncaptured object rather than the
+ * same one under a different seal. See `setPayload`'s two conditions.
  */
 function statusLedCommand(on: boolean, ctx: CommandContext): Command {
   if (hasCapability(ctx, "doorbell")) return setPayload(CAMERA_CMD.DOORBELL_LED, { light_enable: on ? 1 : 0 }, ctx);
@@ -657,7 +661,7 @@ export const CAMERA_MEMBERS = {
       const nv = coerceEnumValue(NightVision, v);
       return nv == null
         ? undefined
-        : setPayload(CAMERA_CMD.NIGHT_VISION_TYPE, { channel: ctx.channel, night_sion: nv }, ctx, 0, 0);
+        : setPayload(CAMERA_CMD.NIGHT_VISION_TYPE, { channel: ctx.channel, night_sion: nv }, ctx, 0, 0, "auto");
     },
   },
   /**
@@ -717,7 +721,14 @@ export const CAMERA_MEMBERS = {
       const q = resolveRecordingQualityTier(v);
       return q == null
         ? undefined
-        : setPayload(CAMERA_CMD.RECORDING_QUALITY_SET, { channel: 0, mode: 0, primary_view: 0, quality: q }, ctx, 0);
+        : setPayload(
+            CAMERA_CMD.RECORDING_QUALITY_SET,
+            { channel: 0, mode: 0, primary_view: 0, quality: q },
+            ctx,
+            0,
+            undefined,
+            "auto",
+          );
     },
   },
   /**

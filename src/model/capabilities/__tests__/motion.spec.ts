@@ -64,6 +64,7 @@ describe("motion capability module", () => {
         payload: { only_ai: 1 },
         channel: 3,
         mValue3: 0,
+        form: "auto",
       });
       expect(intent("humanOnlyAtNight", false, H(3))).toMatchObject({ payload: { only_ai: 0 } });
     });
@@ -75,6 +76,7 @@ describe("motion capability module", () => {
         payload: { radar_wd_switch: 1 },
         channel: 2,
         mValue3: 0,
+        form: "auto",
       });
       expect(intent("loiteringDetection", false, L(2))).toMatchObject({
         payload: { radar_wd_switch: 0 },
@@ -150,6 +152,7 @@ describe("motion capability module", () => {
         payload: { ai_detect_type: 0x3000f, channel: 3 },
         channel: 0,
         mValue3: 0,
+        form: "auto",
       });
     });
 

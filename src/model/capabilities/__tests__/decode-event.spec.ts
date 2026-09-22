@@ -29,6 +29,23 @@ describe("decodeEvent — unified inbound dispatch", () => {
       expect(push(772)).toEqual([]); // just above
     });
 
+    it("lockState carries a decoded `locked` boolean for the (un)lock actions", () => {
+      // *_LOCK actions 262..268 → locked:true; *_UNLOCK actions 257..261 + 269 → locked:false.
+      expect(push(262)[0].payload).toMatchObject({ locked: true }); // MANUAL_LOCK
+      expect(push(268)[0].payload).toMatchObject({ locked: true }); // TEMPORARY_PW_LOCK
+      expect(push(257)[0].payload).toMatchObject({ locked: false }); // MANUAL_UNLOCK
+      expect(push(269)[0].payload).toMatchObject({ locked: false }); // TEMPORARY_PW_UNLOCK
+    });
+
+    it("a non-transition lock event (alarm/status) still emits lockState but carries NO `locked`", () => {
+      // 513 = LOW_POWER, 769 = STATUS_CHANGE, 771 = LOCK_ONLINE — in range, but not a lock/unlock.
+      for (const et of [513, 769, 771]) {
+        const p = push(et)[0];
+        expect(p).toMatchObject({ event: "lockState" });
+        expect(p.payload).not.toHaveProperty("locked");
+      }
+    });
+
     it("carries the thumbnail through", () => {
       expect(push(3101, { thumbnailUrl: "http://x/y.jpg" })[0].payload).toMatchObject({
         thumbnailUrl: "http://x/y.jpg",
@@ -269,6 +286,17 @@ describe("decodeEvent — detection sub-events and station events", () => {
     expect(push(3105)[0]).toMatchObject({ event: "soundDetected" });
     expect(push(3107)[0]).toMatchObject({ event: "vehicleDetected" });
     expect(push(3108)[0]).toMatchObject({ event: "dogDetected" });
+  });
+
+  /**
+   * 3106 is declared identically in the doorbell, indoor and HB3-paired vocabularies, so it belongs to
+   * the camera-wide capability rather than to the doorbell one. A camera with no doorbell has to
+   * decode it, and a doorbell — which holds both capabilities — has to decode it once, not twice.
+   */
+  it("decodes a pet detection for every camera, and once for a device that is also a doorbell", () => {
+    expect(push(3106)[0]).toMatchObject({ event: "petDetection" });
+    expect(push(3106, ["motion"]).map((e) => e.event)).toEqual(["petDetection"]);
+    expect(push(3106, ["motion", "doorbell"]).map((e) => e.event)).toEqual(["petDetection"]);
   });
 
   it("tags the dog sub-behaviours without inventing separate event names", () => {

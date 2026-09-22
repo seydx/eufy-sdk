@@ -12,6 +12,7 @@ const SETTLE_GRACE_MS = 8_000;
 
 interface FakeSession extends FakeP2PSession {
   sendSetPayload: ReturnType<typeof vi.fn>;
+  sendControlLevel2: ReturnType<typeof vi.fn>;
   sendRawLevel2: ReturnType<typeof vi.fn>;
   sendStringPayloadCommand: ReturnType<typeof vi.fn>;
   sendIntStringCommand: ReturnType<typeof vi.fn>;
@@ -20,6 +21,7 @@ interface FakeSession extends FakeP2PSession {
 function setup(hasLevel2Key: boolean, attached = true) {
   const session = connectedSession(hasLevel2Key) as FakeSession;
   session.sendSetPayload = vi.fn();
+  session.sendControlLevel2 = vi.fn(() => true);
   session.sendRawLevel2 = vi.fn(() => true);
   session.sendStringPayloadCommand = vi.fn();
   session.sendIntStringCommand = vi.fn();
@@ -123,6 +125,55 @@ describe("resolving a session defers the level-2 wait to the session", () => {
     const { router, session } = setup(false);
     await router.dispatchCommand(DEVICE_SN, { kind: "p2p-int-string", cmd: 1202, value: 10, valueSub: 1, channel: 1 });
     expect(session.awaitLevel2Key).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The `1350` SET_PAYLOAD envelope on a station that will never hold a level-2 key.
+ *
+ * Pinned to level 2 this frame is not slow on such a station, it is UNSENDABLE — and it does not say so:
+ * the required-key path spends the full grace, re-prompts, spends it again, and only then refuses, so a
+ * caller bounding the call more tightly than that reports a timeout and never learns the frame went
+ * nowhere. A T8410 is such a station. `"auto"` is what the capability layer passes to leave the seal to
+ * the session; these pin what that then does on each kind of station.
+ */
+describe("a set-payload whose seal is the session's", () => {
+  /** How many times a fire-and-forget control is repeated on this router (`DIRECT_CMD_SENDS`). */
+  const REPLAYS = 5;
+
+  const envelope = (form?: "auto") =>
+    ({ kind: "set-payload", cmd: 1224, payload: { mode_type: 63 }, channel: 0, mValue3: 0, form }) as const;
+
+  it("sends it level-1 to a keyless own-session station, replayed, without a per-call wait", async () => {
+    const { router, session } = setup(false, false);
+
+    await router.dispatchCommand(DEVICE_SN, envelope("auto"));
+
+    expect(session.sendSetPayload).toHaveBeenCalledTimes(REPLAYS);
+    expect(session.sendControlLevel2).not.toHaveBeenCalled();
+    // The settle wait, charged from connect — never the per-call grace the required-key path spends.
+    expect(session.awaitLevel2Key).toHaveBeenCalledWith(SETTLE_GRACE_MS, "session");
+    expect(session.awaitLevel2Key).not.toHaveBeenCalledWith(HARD_GRACE_MS, "call");
+  });
+
+  /** The behaviour every still-pinned `setPayload` keeps, and the one the fix removed from the rest. */
+  it("refuses the same frame with no form, after spending both graces on a key that never comes", async () => {
+    const { router, session } = setup(false, false);
+
+    await expect(router.dispatchCommand(DEVICE_SN, envelope())).rejects.toBeInstanceOf(StationKeyUnavailableError);
+
+    expect(session.awaitLevel2Key).toHaveBeenCalledWith(HARD_GRACE_MS, "call");
+    expect(session.sendSetPayload).not.toHaveBeenCalled();
+  });
+
+  /** A keyed station is untouched by the downgrade: same envelope, same seal, same replay as before. */
+  it("still seals it level-2 where the session holds a key", async () => {
+    const { router, session } = setup(true, false);
+
+    await router.dispatchCommand(DEVICE_SN, envelope("auto"));
+
+    expect(session.sendControlLevel2).toHaveBeenCalledTimes(REPLAYS);
+    expect(session.sendSetPayload).not.toHaveBeenCalled();
   });
 });
 

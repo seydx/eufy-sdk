@@ -61,9 +61,28 @@ export function setJsonRaw(cmd: number, data: Record<string, unknown>, ctx: Comm
  * Set a param carried in the `SET_PAYLOAD` (1350) envelope — `{account_id,cmd,mChannel,mValue3:cmd,
  * payload}`, GCM signCode 8 — NOT the bare `{commandType,data}` 1700 wrapper `setJson` uses. The wire
  * eufy uses for a few doorbell controls (status-LED 1716 `{light_enable}`). Level-2 by default; the
- * sink resolves the session/account_id and replays the frame. Pass `form: "auto"` when the envelope is
- * also valid at level 1, so a STANDALONE device — which never negotiates a level-2 key — can receive it
- * instead of failing outright.
+ * sink resolves the session/account_id and replays the frame.
+ *
+ * ## When this envelope takes `form: "auto"`
+ *
+ * Left at the default the frame is level-2 ONLY, and on a station holding no level-2 key that does not
+ * fail — it WAITS: the transport spends the full level-2 grace, re-prompts, spends it again, and only
+ * then throws. Every caller with a shorter bound sees a hang rather than a refusal, so a control on a
+ * device that may be its own keyless station is effectively unreachable. `"auto"` hands the choice to
+ * the session (`sendBySessionLevel`), which seals level-2 wherever a key exists — unchanged for a
+ * HomeBase — and level-1 where none does.
+ *
+ * Two conditions, and BOTH have to hold:
+ *
+ *  1. **`mValue3` is passed explicitly as 0.** The level-1 form of this envelope writes `mValue3:0`
+ *     itself, while the level-2 form defaults it to the sub-command — so a command that passes 0 sends
+ *     byte-identical JSON either way and `"auto"` only changes the seal. A command that OMITS `mValue3`
+ *     would send a DIFFERENT object at level 1 than the one captured at level 2; that is a new wire
+ *     needing its own evidence, not a downgrade, and it stays pinned until something captures it.
+ *  2. **The device can be its own station.** A camera or doorbell may be standalone; a HomeBase, and an
+ *     accessory whose session IS its HomeBase's, always holds a key. Where a key is structurally
+ *     guaranteed, staying pinned is the honest behaviour: a keyless station there is an anomaly, and
+ *     throwing says so where a silently-ignored level-1 frame would look like success.
  */
 export function setPayload(
   cmd: number,

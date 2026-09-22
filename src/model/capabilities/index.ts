@@ -954,6 +954,7 @@ export type {
   CapabilityFrame,
   CapabilityEvent,
   InboundSignal,
+  EventClaim,
   EventMapping,
   ProductLine,
   ActionArgSpec,

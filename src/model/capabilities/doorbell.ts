@@ -286,7 +286,8 @@ export const DOORBELL_MEMBERS = {
       "Doorbell chime volume, 0-100 (1717 APP_CMD_BAT_DOORBELL_SET_DINGDONG_VOLUME; SET_PAYLOAD " +
       "envelope, distinct from the direct-binary ringtoneVolume/1708 — see DOORBELL_CMD.DINGDONG_VOLUME). " +
       "Write wire-confirmed live on T8214, observed values 3 and 25.",
-    write: (v, ctx) => setPayload(DOORBELL_CMD.DINGDONG_VOLUME, { dingdong_volume: Number(v) }, ctx, 0),
+    write: (v, ctx) =>
+      setPayload(DOORBELL_CMD.DINGDONG_VOLUME, { dingdong_volume: Number(v) }, ctx, 0, undefined, "auto"),
   },
   /**
    * The same `1350` SET_PAYLOAD shape and capture session as {@link DOORBELL_MEMBERS.dingdongVolume},
@@ -311,7 +312,7 @@ export const DOORBELL_MEMBERS = {
       const tone = coerceEnumValue(DoorbellRingtone, v);
       return tone === undefined
         ? undefined
-        : setPayload(DOORBELL_CMD.DINGDONG_RINGTONE, { dingdong_ringtone: tone }, ctx, 0);
+        : setPayload(DOORBELL_CMD.DINGDONG_RINGTONE, { dingdong_ringtone: tone }, ctx, 0, undefined, "auto");
     },
   },
   /**
@@ -474,10 +475,16 @@ export const DOORBELL: CapabilityModule = {
   properties: propertiesOf(DOORBELL_MEMBERS),
   /** Doorbells self-report no single unambiguous param; the model name is the reliable signal. */
   detection: { modelHints: [/doorbell/i] },
-  /** Inbound FCM doorbell events (`DoorbellPushEvent`): ring press, pet, package delivered/taken. */
+  /**
+   * Inbound FCM doorbell events (`DoorbellPushEvent`): ring press and the package trio.
+   *
+   * Pet (3106) is NOT here. The id is declared identically in the doorbell, indoor and HB3-paired
+   * vocabularies, so it belongs to the camera-wide `motion` module that every camera binds; claiming
+   * it here as well would make it a contested id that a doorbell — which has both capabilities —
+   * matches twice, emitting one push as two events.
+   */
   events: [
     { source: "push", match: DoorbellPushEvent.PRESS_DOORBELL, emit: "doorbellPress" },
-    { source: "push", match: DoorbellPushEvent.PET_DETECTION, emit: "petDetection" },
     { source: "push", match: DoorbellPushEvent.PACKAGE_DELIVERED, emit: "packageDelivered" },
     { source: "push", match: DoorbellPushEvent.PACKAGE_TAKEN, emit: "packageTaken" },
     { source: "push", match: DoorbellPushEvent.PACKAGE_STRANDED, emit: "packageStranded" },

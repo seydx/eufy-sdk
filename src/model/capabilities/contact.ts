@@ -162,6 +162,10 @@ export const CONTACT_MEMBERS = {
    * `1350` SET_PAYLOAD, `mChannel` = the device channel, `mValue3` 0, payload carrying the channel and a
    * transaction stamp — the byte-shape of the app's own captured frame. Out of range is refused rather
    * than clamped: the app's slider has no values outside it, so one is a caller error, not a nudge.
+   *
+   * Level-2 only, though the `mValue3` 0 would allow `"auto"`: an entry sensor's session IS its
+   * HomeBase's, which always holds a key — the second of `setPayload`'s two conditions, not an oversight
+   * of the first.
    */
   alarmVolume: {
     param: CONTACT_CMD.ALARM_VOLUME,

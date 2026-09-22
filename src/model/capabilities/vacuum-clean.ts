@@ -772,6 +772,76 @@ export type CleanExtent = (typeof CLEAN_EXTENTS)[number];
 const CLEAN_EXTENT: Record<number, CleanExtent> = { 0: "normal", 1: "narrow", 2: "quick" };
 
 /**
+ * The wire integer a decoded name stands for, by inverting the table the read decodes through.
+ *
+ * One table per setting serves both directions, so a write and the read that observes it cannot come
+ * to disagree about which integer a name means. Throws for a name the table does not hold: the
+ * argument is typed, so reaching that is a caller crossing the type boundary, and sending the robot a
+ * settings frame with a silently dropped field would be worse than saying so.
+ * @internal
+ */
+function cleanParamWireValue<T extends string>(names: Record<number, T>, name: T): number {
+  const found = Object.entries(names).find(([, candidate]) => candidate === name);
+  if (found === undefined) throw new Error(`clean param: ${name} is not a value this setting takes`);
+  return Number(found[0]);
+}
+
+/**
+ * Write one single-field setting wrapper into a `CleanParam`.
+ *
+ * The wrapper is always emitted; the inner varint only when it is non-zero. proto3 omits a zero, so an
+ * empty wrapper IS the enum's zero member — the same bytes the vendor's own encoder produces, and the
+ * same bytes {@link decodeCleanParamValue} reads back as `0`.
+ * @internal
+ */
+function writeCleanSetting(p: RawDpWriter, wrapper: number, inner: number, value: number): void {
+  p.sub(wrapper, (w) => {
+    if (value !== 0) w.int(inner, value);
+  });
+}
+
+/**
+ * Build a `CleanParamRequest` (DP 154) stating the three cleaning settings a run uses.
+ *
+ * The message is `{ clean_param: CleanParam }` — field 1 of the request, carrying the same `CleanParam`
+ * this module decodes out of field 1 of the reports it receives, so the shape a write sends is the
+ * shape a read has already been proven against on live hardware.
+ *
+ * All three settings are stated together because one message carries all three: a write naming fewer
+ * would be a `CleanParam` with the rest silent, and what a robot does with a half-stated one is not
+ * something this SDK has observed. `clean_times`(7) is never written — the vendor's own field comment
+ * makes zero mean "not stated", so omitting it leaves the robot's configured pass count alone — and
+ * neither is `fan`(6), which belongs to the suction capability's own data point.
+ *
+ * {@link VACUUM_CLEAN_MEMBERS.setCleanParam} dispatches this.
+ * @internal
+ */
+export function encodeCleanParam(cleanType: VacuumCleanType, cleanExtent: CleanExtent, mopLevel: MopLevel): string {
+  return rawDp((w) =>
+    w.sub(CLEAN_PARAM_FIELD.CONFIGURED, (p) => {
+      writeCleanSetting(
+        p,
+        CLEAN_PARAM_FIELD.CLEAN_TYPE,
+        CLEAN_PARAM_FIELD.VALUE,
+        cleanParamWireValue(CLEAN_TYPE, cleanType),
+      );
+      writeCleanSetting(
+        p,
+        CLEAN_PARAM_FIELD.CLEAN_EXTENT,
+        CLEAN_PARAM_FIELD.VALUE,
+        cleanParamWireValue(CLEAN_EXTENT, cleanExtent),
+      );
+      writeCleanSetting(
+        p,
+        CLEAN_PARAM_FIELD.MOP_MODE,
+        CLEAN_PARAM_FIELD.MOP_LEVEL,
+        cleanParamWireValue(MOP_LEVEL, mopLevel),
+      );
+    }),
+  );
+}
+
+/**
  * Read one setting out of the CONFIGURED `CleanParam` (DP 154), by its field number.
  *
  * The generalisation of {@link decodeCleanType}, and it reads the same container for the same reason:
@@ -2932,6 +3002,56 @@ export const VACUUM_CLEAN_MEMBERS = {
     "Run a saved cleaning scene by its id (ModeCtrlRequest method 24 over DP 152).",
     isAiotVacuum,
   ),
+
+  /**
+   * State the cleaning settings a run uses — `CleanParamRequest.clean_param` over DP 154.
+   *
+   * The write counterpart of {@link VACUUM_CLEAN_MEMBERS.cleanType},
+   * {@link VACUUM_CLEAN_MEMBERS.cleanExtent} and {@link VACUUM_CLEAN_MEMBERS.mopLevel}: one message
+   * carries all three, so they are set together rather than through three setters that would each send
+   * the same message with the other two silent.
+   *
+   * **The evidence, and its limit.** The frame is field 1 of `CleanParamRequest`, which carries the
+   * very `CleanParam` this module decodes out of field 1 of the reports a live T2351 sends — the
+   * field numbers, the single-field wrappers and the `mop_mode.level` scale are all read off that
+   * capture, and `encodeCleanParam` writes what `decodeCleanParamValue` reads. What is NOT captured is
+   * the write direction itself. It ships as a method rather than an unverified write because the
+   * hazard that rule answers does not arise here: DP 154 is the robot's own settings report, so a frame
+   * it does not accept leaves those three reads unchanged, where a wrong fire-and-forget command would
+   * look exactly like success.
+   *
+   * Suction is not here. It has its own data point and its own capability — a `fan` field exists in
+   * this message and is deliberately not written, for the same reason it is not read.
+   */
+  setCleanParam: {
+    ...method(
+      ({ sink }) =>
+        (cleanType: VacuumCleanType, cleanExtent: CleanExtent, mopLevel: MopLevel): Promise<void> =>
+          sink.dispatch(aiotDp(VACUUM_DP.CLEAN_PARAM, encodeCleanParam(cleanType, cleanExtent, mopLevel))),
+      "Set the cleaning type, extent and mop water level together (CleanParamRequest.clean_param over DP 154).",
+      isAiotVacuum,
+    ),
+    args: [
+      {
+        name: "cleanType",
+        kind: "enum",
+        values: VACUUM_CLEAN_TYPES,
+        description: "What the robot does with a surface.",
+      },
+      {
+        name: "cleanExtent",
+        kind: "enum",
+        values: CLEAN_EXTENTS,
+        description: "How far past the mapped edge a job reaches. Wire order, not app order.",
+      },
+      {
+        name: "mopLevel",
+        kind: "enum",
+        values: MOP_LEVELS,
+        description: "How much water the mop lays down. Only meaningful for a clean type that mops.",
+      },
+    ],
+  },
 
   /**
    * Clean the named rooms of a named map (ModeCtrlRequest method 1 over DP 152).

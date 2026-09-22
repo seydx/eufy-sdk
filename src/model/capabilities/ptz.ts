@@ -214,6 +214,8 @@ export function zoomCommand(dstZoom: number, ctx: CommandContext, region?: ZoomR
     },
     ctx,
     0,
+    undefined,
+    "auto",
   );
 }
 
@@ -269,8 +271,12 @@ export function savePresetCommand(id: number, ctx: CommandContext): [Command, Co
  *
  * 6242 sets the default to the preset the camera is **currently parked on**. To move the default, park
  * the camera on `presetId` first — `preview(presetId)`, let the pan finish, then `setDefault(presetId)`.
- * Sent while the camera is elsewhere, it has no effect. The parser is topology-agnostic; the router
- * picks the encryption level (L1/L2) by topology.
+ * Sent while the camera is elsewhere, it has no effect.
+ *
+ * Level-2 only, unlike `zoom` beside it: this frame carries the envelope's DEFAULT `mValue3` (the
+ * sub-command), which the level-1 form cannot express — it writes 0. Downgrading it would send an
+ * object nothing has captured, so it stays pinned and is unreachable on a keyless standalone camera
+ * until one is. See `setPayload`'s two conditions.
  */
 export function setDefaultPositionCommand(presetId: number, ctx: CommandContext): Command {
   return setPayload(PTZ_CMD.PTZ_SET_DEFAULT_POSITION, { index: presetId, settingstate: 0 }, ctx);

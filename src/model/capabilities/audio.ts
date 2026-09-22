@@ -130,7 +130,14 @@ export const AUDIO_MEMBERS = {
       "(on→1288=0, off→1288=1). The write is a 1350 SET_PAYLOAD on the device channel with " +
       "`{channel, record_mute}` — the key is record_mute and it is INVERTED.",
     write: (v, ctx) =>
-      setPayload(AUDIO_CMD.AUDIO_RECORDING, { channel: ctx.channel, record_mute: asBool(v) ? 0 : 1 }, ctx, 0),
+      setPayload(
+        AUDIO_CMD.AUDIO_RECORDING,
+        { channel: ctx.channel, record_mute: asBool(v) ? 0 : 1 },
+        ctx,
+        0,
+        undefined,
+        "auto",
+      ),
   },
   /**
    * Doorbell ring/chime loudness — WRITE-ONLY here on purpose. The READ property `ringtoneVolume` (1708)

@@ -1600,6 +1600,13 @@ export class P2PCommandRouter {
    * standalone camera never negotiates a level-2 key, so pinning this to level 2 makes the envelope
    * unreachable on exactly the devices that serve their own RTSP stream. Verified live: a standalone
    * camera accepts the level-1 form. With no `form` (default) it stays level-2 only.
+   *
+   * Both seals REPLAY the frame {@link DIRECT_CMD_SENDS}× at 200ms, as every other fire-and-forget
+   * control on this router does: these are unacknowledged datagrams, and a level-1 device is the one
+   * least able to afford a single dropped one — it has no reply, no readback here, and nothing that
+   * would tell a caller the write was lost rather than refused. The level-1 form reports delivery by
+   * throwing (`sendSetPayload` throws when the session has no address) rather than by returning a
+   * boolean, so the first pass carries the failure and the rest are repeats.
    */
   private async sendSetPayloadEnvelope(
     sn: string,
@@ -1612,9 +1619,11 @@ export class P2PCommandRouter {
   ): Promise<void> {
     if (form === "auto") {
       await this.sendBySessionLevel(sn, {
-        l1: ({ session, accountId }) => {
-          session.sendSetPayload(cmd, payload, { accountId, channel });
-          return Promise.resolve();
+        l1: async ({ session, accountId }) => {
+          for (let i = 0; i < DIRECT_CMD_SENDS; i++) {
+            session.sendSetPayload(cmd, payload, { accountId, channel });
+            await sleep(200);
+          }
         },
         // NB: do NOT forward sendBySessionLevel's resolved session here — it was resolved with
         // waitLevel2:false (enough to read topology), so on a HomeBase-attached device the level-2

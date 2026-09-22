@@ -93,6 +93,7 @@ describe("doorbell capability module", () => {
         payload: { dingdong_volume: 25 },
         channel: 2,
         mValue3: 0,
+        form: "auto",
       });
     });
 
@@ -116,6 +117,7 @@ describe("doorbell capability module", () => {
         payload: { dingdong_ringtone: 4 },
         channel: 2,
         mValue3: 0,
+        form: "auto",
       });
     });
 
@@ -126,6 +128,7 @@ describe("doorbell capability module", () => {
         payload: { dingdong_ringtone: 0 },
         channel: 2,
         mValue3: 0,
+        form: "auto",
       });
     });
 
