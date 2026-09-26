@@ -31,12 +31,6 @@
 # would flag prose and ordinary local variables everywhere and be switched off within a week; the
 # accessor is the reachable form of the same reach, and it is greppable.
 #
-# ONE allowlisted exception, by exact text: `stationPower` resolves a station's power tier from its
-# resolved capabilities. It reads a capability set in the facade and is the tier the P2P session
-# lifecycle is driven by, which is a transport-side budget rather than a device feature — the router
-# only ever sees the resulting `"wired"|"battery"` string, and no capability module can answer it,
-# because the question is about the STATION behind an attached device.
-#
 # Single source of truth: package.json `guard:capability-ownership` (folded into `npm run verify`) runs
 # this; CI runs verify.
 set -uo pipefail
@@ -72,10 +66,7 @@ code() {
     sed -E 's_[[:space:]]//.*$__'
 }
 
-# The one allowlisted exception, matched on its text rather than a line number so it cannot drift.
-allowed='caps\.includes\("battery"\) \? "battery" : "wired"'
-
-decisions=$(code | grep -E "\"($caps)\"" | grep -E '(capabilit|caps|\.has\()' | grep -vE "$allowed" || true)
+decisions=$(code | grep -E "\"($caps)\"" | grep -E '(capabilit|caps|\.has\()' || true)
 if [ -n "$decisions" ]; then
   echo "::error::device.ts / client/ branches on a capability name — a capability's semantics belong in its own module, and these layers are derived from the barrel projections:"
   echo "$decisions"

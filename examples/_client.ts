@@ -2,14 +2,18 @@
  * Shared setup for the examples: construct the client and drive the login state machine.
  *
  * `login()` returns a discriminated result (no exceptions for the expected flow); step through it:
- *  - `captcha` → solve `result.image` and call `solveCaptcha(answer)` (here: from EUFY_CAPTCHA),
- *  - `2fa` → a code was sent; `submitVerifyCode(code)` (here: from EUFY_2FA).
- * A cached session (../.eufy-session.json) resolves straight to `ok`.
+ *  - `captcha` → solve `result.image` and call `solveCaptcha(answer)`,
+ *  - `2fa` → a code was sent; `submitVerifyCode(code)`.
+ * Both are asked for on the terminal and answered in THIS process: a code or captcha belongs to the login
+ * that requested it, and a re-run starts a new login, which issues a new one and invalidates the old.
+ * A cached session (../.eufy-session.json) resolves straight to `ok`, so only the first run asks.
  *
  * Run with `node examples/01-login-list-devices.ts` (Node 24 strips types). Requires `npm run build`
  * first — the examples import the built lib from ../dist for real, typechecked types.
  */
+import { writeFileSync } from "node:fs";
 import path from "node:path";
+import { createInterface } from "node:readline/promises";
 import { EufyMega, FileSessionStore, LoginStatus, type EufyMegaOptions } from "../dist/index.js";
 
 /**
@@ -30,16 +34,28 @@ export async function loginClient(overrides: Partial<EufyMegaOptions> = {}): Pro
   let r = await eufy.login();
   while (r.status !== LoginStatus.Ok) {
     if (r.status === LoginStatus.Captcha) {
-      // r.image is a data:image/png;base64 4-char captcha — solve it out-of-band.
-      if (!process.env.EUFY_CAPTCHA) throw new Error("captcha required — set EUFY_CAPTCHA");
-      r = await eufy.solveCaptcha(process.env.EUFY_CAPTCHA);
+      // r.image is a data:image/png;base64 captcha; save it so it can be opened and read.
+      const file = path.join(import.meta.dirname, "..", ".eufy-captcha.png");
+      writeFileSync(file, Buffer.from(r.image.replace(/^data:image\/\w+;base64,/, ""), "base64"));
+      r = await eufy.solveCaptcha(await ask(`captcha required — open ${file} and type the characters`));
     } else if (r.status === LoginStatus.TwoFactor) {
-      // the code was emailed/texted (r.method says how).
-      if (!process.env.EUFY_2FA) throw new Error("2FA required — set EUFY_2FA");
-      r = await eufy.submitVerifyCode(process.env.EUFY_2FA);
+      r = await eufy.submitVerifyCode(await ask(`2FA code sent (${r.method}) — enter it`));
     } else {
       throw new Error(`unexpected login status: ${JSON.stringify(r)}`); // exhaustive: never busy-loop
     }
   }
   return eufy;
+}
+
+/** Read one trimmed line from the terminal; throws when stdin is not a TTY. */
+async function ask(prompt: string): Promise<string> {
+  if (!process.stdin.isTTY) {
+    throw new Error(`${prompt}: run this example in an interactive terminal (later runs reuse the cached session)`);
+  }
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return (await rl.question(`${prompt}: `)).trim();
+  } finally {
+    rl.close();
+  }
 }

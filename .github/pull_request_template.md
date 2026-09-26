@@ -7,6 +7,13 @@ anywhere else, a check will block it — change the base with the dropdown above
 a new pull request; this one keeps its commits and its discussion. See CONTRIBUTING.md.
 -->
 
+## Who needs this
+
+<!--
+The user, issue or device run that hits the problem today, and what happens without this change.
+A synthetic test alone is not a need. No answer here means the pull request is not ready.
+-->
+
 ## What changed
 
 ## Why
@@ -21,6 +28,8 @@ Pure refactors, docs and tooling can say "n/a".
 
 ## Verified how
 
+- [ ] Searched open, closed and merged pull requests and issues for the same fix
+- [ ] One point: nothing in this diff belongs to another change
 - [ ] `npm run verify` is green locally
 - [ ] Ran against a real device — which model, and what did it do?
 - [ ] Added or updated specs (offline, synthetic fixtures)

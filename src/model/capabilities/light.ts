@@ -162,6 +162,7 @@ const LIGHT_SWITCH_JSON_TYPES: ReadonlySet<number> = new Set<number>([
 
 /** DeviceTypes whose floodlight switch (1400) uses the level-1 int+string wire. */
 const LIGHT_SWITCH_INT_STRING_TYPES: ReadonlySet<number> = new Set<number>([
+  DeviceType.FLOODLIGHT_CAMERA_8423,
   DeviceType.INDOOR_OUTDOOR_CAMERA_1080P_NO_LIGHT,
   DeviceType.INDOOR_OUTDOOR_CAMERA_2K,
   DeviceType.INDOOR_OUTDOOR_CAMERA_1080P,

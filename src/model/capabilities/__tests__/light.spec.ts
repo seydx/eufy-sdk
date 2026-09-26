@@ -102,6 +102,16 @@ describe("light capability module", () => {
       });
     });
 
+    it("on/off on a T8423 floodlight (deviceType 38) → set-param pinned to int-string (1400)", () => {
+      expect(intent("on", true, { ...ctx(), deviceType: 38 })).toEqual({
+        kind: "set-param",
+        param: LIGHT_CMD.FLOODLIGHT_SWITCH,
+        value: 1,
+        form: "int-string",
+        channel: 0,
+      });
+    });
+
     it("brightness/colorTemp/enabled → set-param pinned to direct-binary with the right param", () => {
       expect(intent("brightness", 50, ctx())).toEqual({
         kind: "set-param",

@@ -1,11 +1,11 @@
 /**
  * eufy FCM push payload types.
  *
- * A push arrives as an MCS DataMessageStanza whose `app_data` has a `payload`
- * entry = base64( NUL-terminated JSON ). That JSON is the EufyPushMessage; its
- * nested `payload` is device-type specific. The v6 app enriches these with AI
- * detection fields (person/vehicle/pet/package/faces/crops/short video) — see
- * PushEnrichment.
+ * A push arrives as an MCS DataMessageStanza whose `app_data` entries make up the
+ * EufyPushMessage envelope. Its `payload` entry is base64( NUL-terminated JSON ), the
+ * device-type specific detail, which may itself nest a further `payload`. The v6 app
+ * enriches these with AI detection fields (person/vehicle/pet/package/faces/crops/short
+ * video) — see PushEnrichment.
  */
 
 /**
@@ -33,11 +33,11 @@ export interface RawPushMessage {
   persistentId?: string;
   ttl?: number;
   sent?: string;
-  /** The decoded eufy payload (the `payload` app_data entry, JSON-parsed). */
+  /** The eufy envelope, as `EufyPushMessage` describes it. */
   payload: EufyPushMessage;
 }
 
-/** The eufy JSON envelope inside the push. */
+/** The eufy envelope: the push's `app_data` entries, with the `payload` entry JSON-parsed in place. */
 export interface EufyPushMessage {
   type?: string | number;
   title?: string;
@@ -48,7 +48,7 @@ export interface EufyPushMessage {
   push_time?: string;
   doorbell?: string;
   "google.c.sender.id"?: string;
-  /** Device-type specific body (often a JSON string that we further parse). */
+  /** The decoded `payload` entry: device-type specific detail, which may nest a further `payload`. */
   payload?: PushPayload;
   [k: string]: unknown;
 }

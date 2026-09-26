@@ -164,6 +164,8 @@ The minimal end-to-end — log in and print each device with its resolved capabi
 <<< @/../examples/01-login-list-devices.ts
 
 > The examples share a `_client.ts` helper that drives the login state machine from `EUFY_EMAIL` /
-> `EUFY_PASSWORD` (and `EUFY_CAPTCHA` / `EUFY_2FA` when needed). Run after `npm run build`.
+> `EUFY_PASSWORD`. When a 2FA code or captcha is needed it asks on the terminal and answers in the same
+> run, so run the first login interactively; the session is then cached in `.eufy-session.json` and later
+> runs skip it. Run after `npm run build`.
 
 Next: [Devices & capabilities](/devices) · [Events](/events) · [Live media](/live-media).

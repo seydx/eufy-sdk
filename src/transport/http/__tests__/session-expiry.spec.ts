@@ -307,6 +307,8 @@ describe("mega authenticated session rejection", () => {
 
       expect(login).toHaveBeenCalledTimes(1);
       expect((held as Error).message).toMatch(/same account and device identity|openudid/);
+      // It reports the repeat it saw and offers another client as a cause, never as a fact it did not observe.
+      expect((held as Error).message).toMatch(/rejected again soon after.*possible cause/);
     });
 
     /** A token that has been working for a while earns the right to be replaced quickly again. */

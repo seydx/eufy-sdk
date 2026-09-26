@@ -5,6 +5,9 @@ dist/
 # credentials — the SDK reads them from the environment, never from a committed file
 .env*
 !.env*.example
+# the examples' cached login session (holds a token) and the captcha image they save
+.eufy-session.json
+.eufy-captcha.png
 
 # docs build artifacts
 docs/api/

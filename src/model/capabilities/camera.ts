@@ -3,6 +3,7 @@ import { DeviceType } from "../device-types.js";
 import { isIndoorCamera, isIndoorCamMini, isIndoorPanTiltS350 } from "../device-family.js";
 import { setScalar, setPayload, setJson, hasCapability } from "./access.js";
 import { AUDIO_CMD } from "./audio.js";
+import { cameraPowerTier } from "./battery.js";
 import { accepts, propertiesOf, provided, type Members, type Surface, type MemberDeps } from "./members.js";
 import type { CapabilityModule, CapabilityActions, CommandContext } from "./types.js";
 import { CameraDisabledError, type Command, type MediaProvider } from "../../core/contracts.js";
@@ -429,11 +430,12 @@ function statusLedCommand(on: boolean, ctx: CommandContext): Command {
 
 /**
  * How this camera is powered, as every media egress needs to be told: a battery device is streamed
- * under a budget, a wired one unbounded. A runtime fact off the resolved capabilities, never a model
- * trait — and given to EVERY egress, since any of them may be the call that creates the shared source.
+ * under a budget, a wired one unbounded. Read off the resolved capabilities, except that a confirmed
+ * mains-only model (see `cameraPowerTier` in battery.ts) is wired even with `battery` resolved. Given
+ * to EVERY egress, since any of them may be the call that creates the shared source.
  */
 function poweredOf(ctx: CommandContext): "wired" | "battery" {
-  return ctx.capabilities?.has("battery") ? "battery" : "wired";
+  return cameraPowerTier(ctx.model, ctx.capabilities ?? new Set());
 }
 
 /**

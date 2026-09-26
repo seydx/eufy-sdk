@@ -91,4 +91,52 @@ describe("SecureMqtt.connect — reconnect lifecycle", () => {
     expect(typeof opts.checkServerIdentity).toBe("function");
     expect(opts.ca).toBe(CREDS.aws_root_ca1_pem);
   });
+
+  describe("one connection per instance", () => {
+    it("joins an in-flight connect instead of opening a second client under the same id", async () => {
+      const m = new SecureMqtt({ credentials: CREDS });
+      const first = m.connect();
+      const second = m.connect();
+      (await nextClient(fakeClients)).emit("connect");
+      await Promise.all([first, second]);
+      expect(fakeClients).toHaveLength(1);
+    });
+
+    it("reuses an established connection on a later connect()", async () => {
+      const m = new SecureMqtt({ credentials: CREDS });
+      const p = m.connect();
+      (await nextClient(fakeClients)).emit("connect");
+      await p;
+      await m.connect();
+      expect(fakeClients).toHaveLength(1);
+    });
+
+    it("retries with a fresh client after a connect that failed", async () => {
+      const m = new SecureMqtt({ credentials: CREDS, instanceIp: "198.51.100.7" });
+      m.on("error", () => {});
+      const failed = m.connect();
+      (await nextClient(fakeClients)).emit("error", new Error("ECONNREFUSED"));
+      await expect(failed).rejects.toThrow("ECONNREFUSED");
+
+      const retry = m.connect();
+      (await nextClient(fakeClients, 1)).emit("connect");
+      await retry;
+      expect(fakeClients).toHaveLength(2);
+    });
+
+    it("opens a new client after an explicit disconnect()", async () => {
+      const m = new SecureMqtt({ credentials: CREDS });
+      const p = m.connect();
+      const client = await nextClient(fakeClients);
+      Object.assign(client, { endAsync: vi.fn(async () => {}) });
+      client.emit("connect");
+      await p;
+      await m.disconnect();
+
+      const again = m.connect();
+      (await nextClient(fakeClients, 1)).emit("connect");
+      await again;
+      expect(fakeClients).toHaveLength(2);
+    });
+  });
 });

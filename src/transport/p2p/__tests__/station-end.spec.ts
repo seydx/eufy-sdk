@@ -22,9 +22,11 @@ function session(connected = true) {
     connectAddress?: { host: string; port: number };
     connected: boolean;
     closed: boolean;
+    socket?: { send: ReturnType<typeof vi.fn>; close: (done: () => void) => void };
     send: (addr: { host: string; port: number }, type: Buffer, payload?: Buffer) => void;
     onMessage: (msg: Buffer, rinfo: { address: string; port: number }) => void;
   };
+  internals.socket = { send: vi.fn(), close: (done) => done() };
   internals.connectAddress = { ...STATION };
   internals.connected = connected;
   const send = vi.spyOn(internals, "send");

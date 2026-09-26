@@ -147,14 +147,23 @@ function recordSetting(param: number, value: number, ctx: CommandContext): Comma
  * Evidence bars differ: T8425 (Floodlight Cam) is confirmed on owned hardware; T8419 (Indoor Cam) is
  * taken from the app's own mains-cam handling (see the note on `publishedWorkingModeDomain`); T8410
  * (Indoor Cam Pan & Tilt) is confirmed mains-only by the maintainer, reported after a live unit showed
- * a battery level, a cell temperature and both solar reads it cannot have.
+ * a battery level, a cell temperature and both solar reads it cannot have. T84A1 (Wall Light Cam
+ * S100) is a hardwired fixture that replaces a wall light; the app files it under its `wallLight`
+ * family (T81A0/T84A1/T86P2, from its OTA-type switch) and a standalone unit was reported (issue #191)
+ * with its live stream cut every ~57 s by the battery budget it cannot need.
  *
- * KNOWN, ACCEPTED trade: because the capability stays, `poweredOf` (camera.ts) still resolves these as
- * `battery`, so a live stream is budgeted as if cell-powered. An unnecessary power budget is cheap; a
- * phantom battery icon is a support ticket — so the visible entity is fixed here and the budget is
- * left as-is (a `poweredOf` refinement would be a separate change).
+ * The same list decides the live-media and P2P-session power tier through {@link cameraPowerTier}: a
+ * budget on a mains camera is not cheap once it kills a continuous stream every minute.
  */
-const MAINS_CAMERA_MODELS = ["T8425", "T8419", "T8410"] as const;
+const MAINS_CAMERA_MODELS = ["T8425", "T8419", "T8410", "T84A1"] as const;
+
+/**
+ * Power tier of a camera for its live-media budget and standalone P2P session: `"battery"` only when it
+ * resolved the `battery` capability AND is not a listed mains-only model, else `"wired"`.
+ */
+export function cameraPowerTier(model: string | undefined, capabilities: ReadonlySet<string>): "wired" | "battery" {
+  return capabilities.has("battery") && notMainsCamera({ model }) ? "battery" : "wired";
+}
 
 /** False for a mains camera whose battery params are sentinels — gates every physical-cell read. */
 const notMainsCamera = (ctx: AvailabilityContext): boolean => {

@@ -7,6 +7,9 @@ on its own; everything normative lives there, not here.
 When reviewing a pull request, weight these above generic style feedback. Each one fails the build or
 ships a bug that looks like success:
 
+- **Need and scope first.** Before the code: does the pull request name who hits the problem today, is
+  it the only open or merged fix for it, and does it do one thing? A missing need or a duplicate is the
+  finding; say so before any line comment.
 - **Layer direction.** `model/` must never import `transport/` (or a wire library: `mqtt`,
   `protobufjs`), and `transport/` must never import `model/`. A shared need becomes an
   interface in `core/contracts.ts`, injected by `client/` — never a relaxed import or a wire constant

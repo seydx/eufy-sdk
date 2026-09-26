@@ -78,6 +78,8 @@ export const MODEL_REGISTRY: Readonly<Record<string, RegistryEntry>> = {
   T8400: { codec: "camera", caps: ["arming"], name: "Indoor Cam" },
   T8410: { codec: "camera", caps: ["arming"], name: "Indoor Cam Pan & Tilt" },
   T8442: { codec: "camera", caps: ["arming"], name: "Indoor/Outdoor Cam 1080p" },
+  // Hardwired wall-light camera; mains power asserted in MAINS_CAMERA_MODELS.
+  T84A1: { codec: "camera", name: "Wall Light Cam S100" },
 
   // Sensors — the concrete sensor kind is curated (DeviceType 2 alone is ambiguous).
   T8900: { codec: "sensor", caps: ["contact"], name: "Entry Sensor" },

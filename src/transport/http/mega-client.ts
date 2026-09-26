@@ -142,8 +142,9 @@ export class SessionExpiredError extends Error {
   /**
    * Whether this rejection landed inside that bar — a token replaced recently and rejected again since.
    *
-   * It says the session is being DISPLACED rather than expiring: something else is signing in on this
-   * account, and replacing the token again only trades one login for another.
+   * That is the shape displacement by another client signed in on this account has, where replacing the
+   * token again only trades one login for another. It is not proof of one, since a cloud refusing to
+   * re-issue the session looks the same.
    */
   readonly contended: boolean;
 
@@ -252,18 +253,19 @@ const REAUTH_HOLD_OFF_CAP_MS = 30 * 60_000;
 const REAUTH_STABLE_MS = 10 * 60_000;
 
 /**
- * What a token being displaced repeatedly means, and what can be done about it. Carried on the surfaced
- * error because the alternative — a client silently trading logins with another — is worse than a caller
- * being told.
+ * What a token rejected again soon after being replaced means, and what can be done about it. Carried on the
+ * surfaced error because the alternative — a client silently trading logins with another — is worse than a
+ * caller being told.
  *
- * The mechanism comes first and the `openudid` remedy second: the remedy applies only where the other
- * client is another SDK install, and a caller that already sets its own device id is left with the
- * mechanism alone. {@link SessionExpiredError.contended} is that same fact without the prose.
+ * It states what was observed and offers another client only as a possible cause: nothing on this path sees
+ * that client, and the same pattern also comes from a cloud that will not re-issue a session at all. The
+ * `openudid` remedy applies only where the other client is another SDK install. {@link SessionExpiredError.contended}
+ * is that same observation without the prose.
  */
 const CONTENDED_SESSION_HINT =
-  "another client signed in on this account keeps displacing this session — the cloud holds about one " +
-  "session per account and device identity, so each login ends the other's; where the other client is " +
-  "another SDK install, give each its own openudid";
+  "the token was rejected again soon after it was last replaced; one possible cause is another client signed " +
+  "in with the same account and device identity, since the cloud holds about one session per pair and each " +
+  "login ends the other's (where that is another SDK install, give each its own openudid)";
 
 /**
  * Whether a rejection's CODE or WORDING says the token is finished, rather than that this request was refused
@@ -335,6 +337,8 @@ export class MegaHttpClient {
   private sessionKey?: SessionEntry;
   /** Per-host ECDH session keys for non-mega gateways (e.g. eufylife) keyed by host. */
   private readonly sessionKeys = new Map<string, SessionEntry>();
+  /** The in-flight key exchanges, by host and the token they carry — see {@link ensureSessionKey}. */
+  private readonly keyExchanges = new Map<string, Promise<SessionEntry>>();
   /**
    * The held credential. `userId` is the login reply's `ap_cloud_user_id` where it has one — the Anker
    * Passport cloud's id — while `accountUserId` is the eufy account's own `user_id`.
@@ -580,6 +584,21 @@ export class MegaHttpClient {
       if (cached && Date.now() - cached.createdAt < 12 * 3600_000) return cached;
     }
     const host = isEufylife ? targetHost! : (this.bootstrapDomain ?? `app-openapi-${this.region}.eufy.com`);
+    // Joined, not duplicated: every call that finds the key gone at once waits on the one exchange. The token is
+    // part of the key because an exchange started before a login is bound to no user, and login re-exchanges
+    // precisely to get one that is.
+    const flight = `${host}\n${this.auth_?.authToken ?? ""}`;
+    const joining = this.keyExchanges.get(flight);
+    if (joining) return joining;
+    const exchange = this.exchangeSessionKey(host, isEufylife).finally(() => {
+      if (this.keyExchanges.get(flight) === exchange) this.keyExchanges.delete(flight);
+    });
+    this.keyExchanges.set(flight, exchange);
+    return exchange;
+  }
+
+  /** One key exchange against `host`, installed as that host's key. */
+  private async exchangeSessionKey(host: string, isEufylife: boolean): Promise<SessionEntry> {
     const kxPath = isEufylife ? "/v3/openapi/oauth/key/exchange" : "/openapi/oauth/key/exchange";
     const prep = prepareKeyExchange(isEufylife ? EUFYLIFE_LOCAL_KEY_HEX : undefined);
     const res = await this.httpPost(
@@ -604,7 +623,7 @@ export class MegaHttpClient {
       );
     }
     const entry = finishKeyExchange(prep, env.data.server_public_key);
-    if (isEufylife) this.sessionKeys.set(targetHost!, entry);
+    if (isEufylife) this.sessionKeys.set(host, entry);
     else this.sessionKey = entry;
     return entry;
   }
@@ -703,8 +722,10 @@ export class MegaHttpClient {
         /get identity error|identity error/i.test(last?.msg ?? ""));
     if (identityError && !retry.identity && this.auth_) {
       this.logger.debug("[mega] identity error → re-exchanging session key and retrying");
-      if (host.includes(".eufylife.com")) this.sessionKeys.delete(host);
-      else this.sessionKey = undefined;
+      // Only the key this call was signed with: one another call already replaced is the fresh one to use.
+      if (host.includes(".eufylife.com")) {
+        if (this.sessionKeys.get(host) === entry) this.sessionKeys.delete(host);
+      } else if (this.sessionKey === entry) this.sessionKey = undefined;
       try {
         await this.ensureSessionKey(host);
       } catch {
@@ -1133,15 +1154,15 @@ export class MegaHttpClient {
    * like the same device — and the cloud keeps one session per device. Each finds its token rejected, replaces
    * it, and evicts the other: an unbounded login war, silent, and repeated logins are exactly what makes an
    * account start demanding captchas. The first replacement is immediate, because a token displaced once is
-   * the ordinary case; a second one soon after is evidence of contention rather than expiry, so the wait grows
-   * and a caller is told the honest reason instead of being served a fight.
+   * the ordinary case; a second one soon after has the shape of contention rather than expiry, so the wait grows
+   * and a caller is told what was seen instead of being served a fight.
    */
   private recoveryDue(): boolean {
     const remaining = this.holdOffRemainingMs();
     if (remaining === 0) return true;
     this.logger.warn(
-      `[mega] token rejected ${Math.round((Date.now() - this.lastRecoveryAt) / 1000)}s after the last ` +
-        `replacement — holding off ${Math.round(remaining / 1000)}s more. ${CONTENDED_SESSION_HINT}`,
+      `[mega] holding off ${Math.round(remaining / 1000)}s more before replacing the token again ` +
+        `(last replaced ${Math.round((Date.now() - this.lastRecoveryAt) / 1000)}s ago): ${CONTENDED_SESSION_HINT}`,
     );
     return false;
   }

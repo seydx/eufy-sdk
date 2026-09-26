@@ -92,7 +92,7 @@ synthetic fixtures. Add tests for new wire logic and capability behaviour.
 - **Conventional Commits** (`feat:`, `fix:`, `docs:`, `refactor:`, …).
 - **Sign your commits** (GPG / `-S`).
 - **PRs: concise, dev-to-dev, to the point.** Say what changed and why; call out anything unverified
-  or deferred. If a PR is stacked on another, set its base to that branch and say so.
+  or deferred. Before opening one, check the list in AGENTS.md under Before you open a pull request.
 - **Live testing is read-only by default.** Never run write commands against a real device without
   explicit confirmation — the unverified-write rule exists for a reason.
 
