@@ -228,6 +228,33 @@ export interface DeviceState {
 }
 
 /**
+ * One person enrolled on a station, as its `person_basic_info` table states them.
+ *
+ * The station's own table, not the cloud's: an account that keeps its faces on the station never
+ * uploaded them, so the cloud roster answers empty for it while this answers the household.
+ *
+ * `person_id` is the id an `IDENTITY_PERSON_DETECTION` push carries, which is what makes a detection
+ * nameable. Every field is optional because the row is the station's to shape — an absent one is a
+ * column that row did not carry, never a default — and unrecognised columns are kept verbatim, so a
+ * station that states more than this is not truncated by it. Keys are the table's own, uncased.
+ */
+export interface StationFace {
+  person_id?: number;
+  /** The name this person was enrolled under. `stranger<n>` is the station's own placeholder. */
+  name?: string;
+  relation?: number | string;
+  group_id?: number | string;
+  [column: string]: unknown;
+}
+
+/** How long to wait for a station's database reply, and how to give up early. */
+export interface StationFacesOptions {
+  /** Default 15s. A full table is a handful of frames; a station that will not answer says nothing. */
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
+
+/**
  * A single semantic event tagged with its name — the payload of the catch-all `"event"` listener.
  * A discriminated union over {@link DeviceEventMap}, so switching on `e.eventName` narrows `e` to that
  * event's payload.

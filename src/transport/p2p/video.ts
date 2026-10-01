@@ -23,8 +23,8 @@
 import { createDecipheriv } from "node:crypto";
 import { eciesUnwrap } from "./codec.js";
 
-/** AAD used for the AES-256-GCM body cipher of every video frame. */
-const VIDEO_GCM_AAD = Buffer.from("eufy security");
+/** AAD used for the AES-256-GCM body cipher of every video frame, and of a recording's audio. */
+export const VIDEO_GCM_AAD = Buffer.from("eufy security");
 
 /** Fixed byte offsets within the frame payload (after the 16-byte XZYH header). */
 const HEADER_LEN = 0x16; // 22-byte frame header

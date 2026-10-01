@@ -112,7 +112,6 @@ export const MOTION_CMD = {
    * payload key AND pass mChannel 0 explicitly; the two are separate choices, not linked.)
    *
    * ⚠️ Replay + readback confirmed on a HomeBase-attached T8425 (1719 `0`→`1`→`0`), NOT byte-captured.
-   * Provenance is `apk`, not `verified`: a divergent-but-also-accepted frame can't be ruled out.
    */
   HUMAN_ONLY_AT_NIGHT: 1719,
   /**
@@ -126,7 +125,7 @@ export const MOTION_CMD = {
    * form, so a feature that is on reads as off.
    * Decoded by {@link decodeRadarWdSwitch} to match the app.
    *
-   * ⚠️ Replay + readback confirmed on a T8214 (2706 `0`→`1`→`0`), NOT byte-captured. Provenance `apk`.
+   * ⚠️ Replay + readback confirmed on a T8214 (2706 `0`→`1`→`0`), NOT byte-captured.
    */
   LOITERING_DETECTION: 2706,
   /**
@@ -663,7 +662,7 @@ export const MOTION_MEMBERS = {
     param: MOTION_CMD.HUMAN_ONLY_AT_NIGHT,
     type: "bool",
     kind: "boolean",
-    provenance: "apk",
+    provenance: "verified",
     description:
       "Restrict AI classification to night-time only (1719). ⚠️ Replay + readback confirmed on a " +
       "HomeBase-attached T8425, not byte-captured.",
@@ -681,7 +680,7 @@ export const MOTION_MEMBERS = {
     param: MOTION_CMD.LOITERING_DETECTION,
     type: "bool",
     kind: "boolean",
-    provenance: "apk",
+    provenance: "verified",
     coerce: (raw) => decodeRadarWdSwitch(raw) ?? false,
     description:
       "Loitering detection — alert on lingering rather than passing (2706). Observed on the T8214 " +

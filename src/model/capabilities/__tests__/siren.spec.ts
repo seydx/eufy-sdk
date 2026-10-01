@@ -201,44 +201,50 @@ describe("siren capability module", () => {
       await expect(siren.acts.setAlarmTone!(3)).rejects.toThrow(/alarmTone: 3 is not a valid value/);
     });
 
-    it("binds the verified duration trigger and zero-duration stop on the station channel", async () => {
-      const { acts, sent } = sirenOf({
-        channel: 0,
-        codec: "station",
-        deviceType: DeviceType.STATION,
-        model: "T8010",
-        accountName: "tester",
-        capabilities: new Set(["siren"]),
-        paramIds: new Set([1279, 1280, 1281, 1282, 61008, 1825, 61006]),
-      });
-      const alarm = acts as unknown as {
-        trigger?: (seconds: number) => Promise<void>;
-        stop?: () => Promise<void>;
-      };
+    it.each([
+      { deviceType: DeviceType.STATION, model: "T8010" },
+      { deviceType: DeviceType.HB3, model: "T8030" },
+    ])(
+      "binds the verified duration trigger and zero-duration stop on the station channel ($model)",
+      async ({ deviceType, model }) => {
+        const { acts, sent } = sirenOf({
+          channel: 0,
+          codec: "station",
+          deviceType,
+          model,
+          accountName: "tester",
+          capabilities: new Set(["siren"]),
+          paramIds: new Set([1279, 1280, 1281, 1282, 61008, 1825, 61006]),
+        });
+        const alarm = acts as unknown as {
+          trigger?: (seconds: number) => Promise<void>;
+          stop?: () => Promise<void>;
+        };
 
-      expect(alarm.trigger).toBeDefined();
-      expect(alarm.stop).toBeDefined();
-      expect((acts as unknown as Record<string, unknown>).active).toBeUndefined();
-      expect((acts as unknown as Record<string, unknown>).test).toBeUndefined();
-      await alarm.trigger!(10);
-      await alarm.stop!();
-      expect(sent).toEqual([
-        {
-          kind: "set-payload",
-          cmd: 1201,
-          payload: { time_out: 10, user_name: "tester" },
-          channel: 255,
-          mValue3: 0,
-        },
-        {
-          kind: "set-payload",
-          cmd: 1201,
-          payload: { time_out: 0, user_name: "tester" },
-          channel: 255,
-          mValue3: 0,
-        },
-      ]);
-    });
+        expect(alarm.trigger).toBeDefined();
+        expect(alarm.stop).toBeDefined();
+        expect((acts as unknown as Record<string, unknown>).active).toBeUndefined();
+        expect((acts as unknown as Record<string, unknown>).test).toBeUndefined();
+        await alarm.trigger!(10);
+        await alarm.stop!();
+        expect(sent).toEqual([
+          {
+            kind: "set-payload",
+            cmd: 1201,
+            payload: { time_out: 10, user_name: "tester" },
+            channel: 255,
+            mValue3: 0,
+          },
+          {
+            kind: "set-payload",
+            cmd: 1201,
+            payload: { time_out: 0, user_name: "tester" },
+            channel: 255,
+            mValue3: 0,
+          },
+        ]);
+      },
+    );
 
     it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])(
       "rejects invalid trigger duration %s without dispatch",

@@ -152,7 +152,7 @@ describe("prebuffer retention", () => {
     expect(drained[0].keyframe).toBe(true);
   });
 
-  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -1])(
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -1, 3e9])(
     "retains nothing when configured with an invalid %s-second window",
     (preBufferSeconds) => {
       const { source, last } = mk({ preBufferSeconds });

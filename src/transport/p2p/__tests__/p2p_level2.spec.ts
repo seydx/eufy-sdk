@@ -74,6 +74,16 @@ describe("P2PSession level-2 (signCode 2/8) GCM decrypt", () => {
     expect(out).toBeUndefined();
   });
 
+  test("the signCode-8 sub-header carries into the next byte after [ff, 03, 02, 01]", () => {
+    const session = newSession();
+    session.setLevel2Key(KEY);
+    const encrypt = (session as unknown as { encryptLevel2(p: Buffer): Buffer }).encryptLevel2.bind(session);
+    const headers = Array.from({ length: 257 }, () => encrypt(Buffer.from("{}")).subarray(28, 32));
+    expect(headers[0]).toEqual(Buffer.from([0x00, 0x03, 0x02, 0x01]));
+    expect(headers[255]).toEqual(Buffer.from([0xff, 0x03, 0x02, 0x01]));
+    expect(headers[256]).toEqual(Buffer.from([0x00, 0x04, 0x02, 0x01]));
+  });
+
   test("setLevel2Key rejects non-32-byte keys", () => {
     expect(() => newSession().setLevel2Key(Buffer.alloc(16))).toThrow();
   });

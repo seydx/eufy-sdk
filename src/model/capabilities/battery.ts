@@ -150,12 +150,14 @@ function recordSetting(param: number, value: number, ctx: CommandContext): Comma
  * a battery level, a cell temperature and both solar reads it cannot have. T84A1 (Wall Light Cam
  * S100) is a hardwired fixture that replaces a wall light; the app files it under its `wallLight`
  * family (T81A0/T84A1/T86P2, from its OTA-type switch) and a standalone unit was reported (issue #191)
- * with its live stream cut every ~57 s by the battery budget it cannot need.
+ * with its live stream cut every ~57 s by the battery budget it cannot need. T8423 (Floodlight Cam 2
+ * Pro) has no battery and requires constant 110–240 V power according to the vendor's product FAQ;
+ * the exact sentinel values it reports are unverified.
  *
  * The same list decides the live-media and P2P-session power tier through {@link cameraPowerTier}: a
  * budget on a mains camera is not cheap once it kills a continuous stream every minute.
  */
-const MAINS_CAMERA_MODELS = ["T8425", "T8419", "T8410", "T84A1"] as const;
+const MAINS_CAMERA_MODELS = ["T8425", "T8419", "T8410", "T84A1", "T8423"] as const;
 
 /**
  * Power tier of a camera for its live-media budget and standalone P2P session: `"battery"` only when it

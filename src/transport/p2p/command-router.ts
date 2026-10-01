@@ -16,6 +16,7 @@ import type {
   Ff09Identity,
   AutoLockSnapshot,
   MediaProvider,
+  RecordingDownload,
   ScalarForm,
   AacEncoder,
   SharedSourceHints,
@@ -24,6 +25,7 @@ import type {
 } from "../../core/contracts.js";
 import {
   DeviceChannelUnresolvedError,
+  RecordingDownloadError,
   StationKeyUnavailableError,
   StationUnreachableError,
 } from "../../core/contracts.js";
@@ -49,6 +51,12 @@ import { decodeP2PCloudIPs } from "./codec.js";
 import { P2P_ENVELOPE } from "./envelope.js";
 import { freshestLanIp } from "./lan-ip.js";
 import { captureSnapshotFromShared, recordClip } from "./media.js";
+import {
+  decodeRecording,
+  homeBase2RecordingPath,
+  receiveRecording,
+  type RecordingTransfer,
+} from "./recording-download.js";
 import type { FfmpegLevel } from "../ffmpeg.js";
 import { LiveStream } from "./live-stream.js";
 import { SharedLiveSource, type Consumer } from "./shared-live-source.js";
@@ -187,6 +195,9 @@ interface ResolvedSession {
   homeBaseAttached: boolean;
 }
 
+/** The options of one {@link MediaProvider.downloadRecording} call. */
+type RecordingDownloadOpts = Parameters<NonNullable<MediaProvider["downloadRecording"]>>[0];
+
 /**
  * The mutable cell a live source reads its session out of. Assigning `session` points every later
  * `makeStream` call at a different connection, leaving the source itself in place.
@@ -264,6 +275,8 @@ export class P2PCommandRouter {
   private readonly talkbacks = new Map<string, Talkback>();
   /** cipher_id → ECC private key (one eufylife get_ciphers call per cipher), shared across (re)opens. */
   private readonly cipherKeyCache = new Map<number, string | undefined>();
+  /** The recording download in flight per station; a station serves one at a time. */
+  private readonly recordingDownloads = new Map<string, Promise<unknown>>();
 
   constructor(private readonly deps: P2PRouterDeps) {
     this.manager = new SessionManager({
@@ -488,33 +501,15 @@ export class P2PCommandRouter {
   ): P2PSession {
     const conn = (raw?.p2p_conn ?? raw?.app_conn) as string | undefined;
     const adminUserId = ((raw?.member as any)?.admin_user_id as string) || this.deps.mega.auth?.userId || "";
-    const session = new P2PSession({
+    const session: P2PSession = new P2PSession({
       stationSn,
       p2pDid: did,
       cloudAddresses: conn ? decodeP2PCloudIPs(conn) : undefined,
       localAddress,
       dskKey,
       noBroadcast: this.deps.noBroadcast,
-      resolveCipherKey: async (cipherId: number) => {
-        if (this.cipherKeyCache.has(cipherId)) return this.cipherKeyCache.get(cipherId);
-        let ecc: string | undefined;
-        try {
-          const ciphers = await this.deps.mega.getCiphers([cipherId], adminUserId, stationSn);
-          ecc = ciphers.find((c) => Number(c.cipher_id) === cipherId)?.ecc_private_key;
-          if (ecc === undefined && ciphers[0]?.ecc_private_key !== undefined) {
-            ecc = ciphers[0].ecc_private_key;
-            this.traceOnStation(session, {
-              phase: "cipher-fallback",
-              cipherId,
-              answeredCipherId: Number(ciphers[0].cipher_id),
-            });
-          }
-        } catch (e) {
-          this.deps.onError(e instanceof Error ? e : new Error(String(e)));
-        }
-        if (ecc !== undefined) this.cipherKeyCache.set(cipherId, ecc);
-        return ecc;
-      },
+      resolveCipherKey: (cipherId: number): Promise<string | undefined> =>
+        this.cipherKeyFor(session, cipherId, adminUserId, stationSn),
       logger: this.deps.logger ?? noopLogger,
     });
     session.on("error", (e: Error) => this.reportError(e));
@@ -534,6 +529,37 @@ export class P2PCommandRouter {
     session.on("level2Ready", ({ cipherId }: { cipherId: number }) => this.deps.onLevel2Ready(stationSn, cipherId));
     session.on("data", (f: P2PFrame) => this.deps.onFrame(stationSn, f));
     return session;
+  }
+
+  /**
+   * The ECC private key of `cipherId`, from the router's cache or one `get_ciphers` call. When the cloud
+   * answers with another cipher, that one is used and traced on `session`. Only a successful lookup is
+   * cached.
+   */
+  private async cipherKeyFor(
+    session: P2PSession,
+    cipherId: number,
+    userId: string,
+    stationSn: string,
+  ): Promise<string | undefined> {
+    if (this.cipherKeyCache.has(cipherId)) return this.cipherKeyCache.get(cipherId);
+    let ecc: string | undefined;
+    try {
+      const ciphers = await this.deps.mega.getCiphers([cipherId], userId, stationSn);
+      ecc = ciphers.find((c) => Number(c.cipher_id) === cipherId)?.ecc_private_key;
+      if (ecc === undefined && ciphers[0]?.ecc_private_key !== undefined) {
+        ecc = ciphers[0].ecc_private_key;
+        this.traceOnStation(session, {
+          phase: "cipher-fallback",
+          cipherId,
+          answeredCipherId: Number(ciphers[0].cipher_id),
+        });
+      }
+    } catch (e) {
+      this.deps.onError(e instanceof Error ? e : new Error(String(e)));
+    }
+    if (ecc !== undefined) this.cipherKeyCache.set(cipherId, ecc);
+    return ecc;
   }
 
   /**
@@ -668,7 +694,11 @@ export class P2PCommandRouter {
    * start has no level-1 form for.
    */
   mediaProviderFor(sn: string): MediaProvider {
+    const recordings = this.downloadsRecordings(sn)
+      ? { downloadRecording: (opts: RecordingDownloadOpts) => this.downloadRecording(sn, opts) }
+      : {};
     return {
+      ...recordings,
       snapshotLive: async (opts) => {
         const source = await this.sharedLiveSourceFor(sn, opts ?? {});
         return captureSnapshotFromShared(source, {
@@ -706,6 +736,73 @@ export class P2PCommandRouter {
         });
       },
     };
+  }
+
+  /**
+   * Whether `sn` is a camera attached to a HomeBase 2 (T8010), the one station whose recording path layout
+   * and frame formats are confirmed.
+   */
+  private downloadsRecordings(sn: string): boolean {
+    const dev = this.recordFor(sn);
+    if (!dev) return false;
+    const parentSn = stationOf(dev);
+    return parentSn !== sn && this.recordFor(parentSn)?.model === "T8010";
+  }
+
+  /**
+   * Download one recording a HomeBase 2 holds for an attached camera, then decode it
+   * ({@link decodeRecording}). Downloads queue per station: the station streams one recording at a time
+   * on the camera's channel, so a download starts only once the previous one has drained
+   * ({@link RecordingTransfer.drained}), even when that one's caller already has its answer. An abort
+   * while waiting rejects without sending anything; an abort mid-transfer rejects at once and the station's
+   * turn is held until the transfer drains.
+   */
+  private async downloadRecording(sn: string, opts: RecordingDownloadOpts): Promise<RecordingDownload> {
+    opts.signal?.throwIfAborted();
+    const parentSn = this.stationKeyOf(sn);
+    const previous = this.recordingDownloads.get(parentSn) ?? Promise.resolve();
+    const started = this.waitTurn(previous, opts.signal).then(() => this.startRecordingDownload(sn, opts));
+    const turn: Promise<unknown> = Promise.allSettled([previous, started.then((t) => t.drained)]).then(() => {
+      if (this.recordingDownloads.get(parentSn) === turn) this.recordingDownloads.delete(parentSn);
+    });
+    this.recordingDownloads.set(parentSn, turn);
+    return started.then((t) => t.recording);
+  }
+
+  /** Resolve once `previous` settles, or reject as soon as `signal` aborts. */
+  private waitTurn(previous: Promise<unknown>, signal?: AbortSignal): Promise<void> {
+    return abortable(
+      previous.then(
+        () => undefined,
+        () => undefined,
+      ),
+      signal,
+    );
+  }
+
+  /**
+   * Start one recording download, once the station's previous download has drained: the decoded recording,
+   * and when the station is done sending it.
+   */
+  private async startRecordingDownload(
+    sn: string,
+    opts: RecordingDownloadOpts,
+  ): Promise<{ recording: Promise<RecordingDownload>; drained: Promise<void> }> {
+    const { session, parentSn, channel, accountId } = await this.resolveSession(sn, { signal: opts.signal });
+    const path = homeBase2RecordingPath(channel, opts.recording);
+    if (!path) throw new RecordingDownloadError("invalid-recording", `no recording named ${opts.recording}`);
+    const eccKey = await this.cipherKeyFor(session, opts.cipherId, accountId, parentSn);
+    if (!eccKey) {
+      throw new RecordingDownloadError("key-unavailable", `cipher ${opts.cipherId} could not be obtained`);
+    }
+    const transfer = receiveRecording(session, {
+      path,
+      accountId,
+      channel,
+      timeoutMs: opts.timeoutMs,
+      signal: opts.signal,
+    });
+    return { recording: transfer.frames.then((frames) => decodeRecording(frames, eccKey)), drained: transfer.drained };
   }
 
   /**

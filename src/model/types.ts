@@ -166,18 +166,17 @@ export function isKnownValueKind(kind: ValueKind): kind is KnownValueKind {
 }
 
 /**
- * Trust provenance of a property's `param_type` mapping, most-trusted first:
- *  - `mega`     — confirmed against the live mega API / a real device's reported params.
- *  - `apk`      — extracted from the v6 app itself (the ids the app actually sends — authoritative).
- *  - `verified` — confirmed by our own capture/observation.
- *  - `guessed`  — a plausible placeholder; lowest trust.
+ * How much a param's name and meaning can be trusted, most-trusted first. This is the one definition;
+ * the param dictionary and every `provenance` field use it.
+ *  - `mega`     — the vendor's cloud names it: its data-point catalog (`get_product_data_point`), or a
+ *                 reported value that matches what the cloud record already says (a model name or code).
+ *  - `verified` — confirmed on a real device by this project: our own capture or observation, or
+ *                 identified by someone who has the hardware.
+ *  - `apk`      — the v6 app's own decompiled constant name, not yet confirmed on a device.
+ *  - `guessed`  — no name source; a plausible placeholder until a toggle-diff settles it.
  *
- * This project never relies on a third-party reverse-engineering project as a source of trust —
- * every id/behavior we ship is grounded in the app's
- * own decompiled code (`apk`) or our own capture/observation (`verified`), never someone else's
- * unverified guess. Absent provenance is treated as `guessed`.
- *
- * Provenance of a property definition — an internal trust label used when curating the model.
+ * A third-party reverse-engineering project is never a source: every name we ship comes from the
+ * vendor's cloud, our own observation or the app itself. Absent provenance is treated as `guessed`.
  * @internal
  */
 export type PropertySource = "mega" | "apk" | "verified" | "guessed";

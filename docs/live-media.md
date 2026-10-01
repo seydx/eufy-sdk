@@ -259,8 +259,9 @@ try {
 
 `snapshotStored(): Promise<Buffer>` returns the latest qualifying push thumbnail retained for that
 device. Acquisition happens eagerly when the push arrives, before any snapshot call. A candidate must
-be attributed to one exact account-known device that has snapshot capability evidence; ambiguous or
-station-only candidates are ignored.
+be attributed to one exact account-known device that has snapshot capability evidence; ambiguous
+candidates are ignored. A candidate that names no device is attributed to the push's device serial when
+that serial is such a device.
 
 The call itself is passive: it does not wait for an acquisition, access storage, make an HTTP request,
 open P2P, start live media, or transcode. If no JPEG is retained it rejects with
@@ -293,7 +294,9 @@ body in a log line:
 
 A candidate is attempted once: the same URL arriving again on a later push (one event is often several)
 is recognised as already attempted and not re-downloaded, for as long as it is inside the per-device
-window of recent URLs. The next event carries a new URL and a new attempt.
+window of recent URLs. The next event carries a new URL and a new attempt. The one exception is a 404: a
+push can arrive before its thumbnail is published, so a 404 is tried again after 2 s and then 4 s, and
+`reason` stays `pending` meanwhile. A newer candidate for the device replaces the retry.
 
 The cache is enabled by default. Constructing `EufyMega` with `{ storedSnapshotCache: false }` ignores
 candidates and omits `snapshotStored` from bound cameras. Retained bytes live only in the client process
@@ -320,6 +323,43 @@ briefly attach, wait for a clean keyframe, decode, and detach. (The JPEG decode 
 an optional convenience sink — resolved on `PATH`, or set `ffmpegPath` on the client to name the binary
 you ship; the raw keyframe bytes are always available dependency-free via `openReadable` / the event
 stream.)
+
+## Recordings stored on a HomeBase 2
+
+A HomeBase 2 (T8010) keeps each event recording of its attached cameras, and names it in the event push:
+`payload.p` is the recording name and `cipher` the key id it was stored under. `downloadRecording`
+fetches that recording over the station's P2P session and decodes it; it does not wake the camera.
+
+```ts
+import { RecordingDownloadError } from "@mega-yfue/eufy-sdk";
+
+eufy.on("push", async (ev) => {
+  const recording = ev.payload.p;
+  if (!ev.deviceSn || typeof recording !== "string" || ev.cipher === undefined) return;
+  const cam = (await eufy.getDevice(ev.deviceSn)).camera?.();
+  try {
+    const clip = await cam?.downloadRecording?.({ recording, cipherId: ev.cipher });
+    // clip.video: Annex-B H.264 · clip.audio: AAC-LC 16 kHz mono ADTS · clip.fps, clip.durationMs
+  } catch (error) {
+    if (error instanceof RecordingDownloadError) console.log(error.reason);
+  }
+});
+```
+
+The download is confirmed on recordings that had finished. How the station answers for a recording it is
+still writing is not established, so issue the download once the camera's configured clip length has
+elapsed since the push. Downloads queue one at a time per station, and the transfer runs faster than real
+time: a 12.8 s recording took about 6 s.
+
+The result is elementary streams, not a container: `video` is Annex-B H.264 and `audio` (when present) is
+AAC-LC in ADTS framing. `fps` and `durationMs` come from the camera's own frame stamps, and `missingFrames`
+counts frames the camera numbered that never arrived. Muxing is the caller's; for example with ffmpeg,
+`-framerate <fps> -f h264 -i video.h264 -f aac -i audio.aac -c copy clip.mp4`.
+
+The download is confirmed on a HomeBase 2 only, so `downloadRecording` is absent on a camera attached to
+any other station. A transfer that ends without the station's finish frame (it went quiet, ran past
+`timeoutMs`, or reached the size ceiling) rejects with reason `incomplete` rather than returning a partial
+recording.
 
 ## Talkback — audio the other way
 

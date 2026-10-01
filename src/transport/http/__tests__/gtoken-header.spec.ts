@@ -18,9 +18,14 @@ const AP_CLOUD_ID = "ap-cloud-0000000001";
 const ACCOUNT_ID = "eufy-account-0000002";
 const TOKEN = "synthetic-auth-token";
 
-/** A client whose login reply is `res`, with the key exchange and persistence seams stubbed. */
+/** A client with a fixed region whose login reply is `res`, with the key exchange and persistence seams stubbed. */
 function clientWithLoginReply(res: Record<string, unknown>, store = new MemorySessionStore()) {
-  const mega = new MegaHttpClient({ email: "synthetic@example.invalid", password: "synthetic", store });
+  const mega = new MegaHttpClient({
+    email: "synthetic@example.invalid",
+    password: "synthetic",
+    region: "us-pr",
+    store,
+  });
   const internals = mega as unknown as {
     postSigned: (host: string, path: string) => Promise<unknown>;
     ensureSessionKey: () => Promise<unknown>;

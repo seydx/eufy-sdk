@@ -49,10 +49,10 @@ be the display's own or the station it is bound to. One value does not settle ei
 would be read downstream as a fact. They are reported as raw ids instead.
 
 **8001 is the battery because the maintainer identified it, and that is why its provenance is `verified`
-rather than `mega`.** `"100"` fits a percentage of brightness, volume or charge equally well, so the
-capture could not have said which, and picking one would have been a coin toss presented to users as a
-fact. It took someone who knows the device — not another capture, and not the cloud data-point list,
-which is what `mega` would have claimed.
+rather than `mega`** (the tiers are defined once, on `PropertySource` in `src/model/types.ts`). `"100"`
+fits a percentage of brightness, volume or charge equally well, so the capture could not have said which,
+and picking one would have been a coin toss presented to users as a fact. It took someone who knows the
+device — not another capture, and not the cloud data-point list, which is what `mega` would have claimed.
 
 The 0-100 scale rests on the reading rather than on convention alone: a full charge reads `255` on a
 0-255 scale and `1000` on a 0-1000 one, so `"100"` on a charged unit is positive evidence for a

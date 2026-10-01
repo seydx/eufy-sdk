@@ -190,6 +190,47 @@ export class DeviceChannelUnresolvedError extends Error {
 }
 
 /**
+ * Why {@link MediaProvider.downloadRecording} returned no recording.
+ *
+ * - `invalid-recording` — the recording name is not one the station could hold.
+ * - `key-unavailable` — the key the recording was stored under could not be obtained.
+ * - `no-data` — the station sent nothing within the wait.
+ * - `incomplete` — the transfer ended before the station's finish frame.
+ * - `undecodable` — data arrived but no video frame could be decoded from it.
+ */
+export type RecordingDownloadFailureReason =
+  "invalid-recording" | "key-unavailable" | "no-data" | "incomplete" | "undecodable";
+
+/** Thrown by {@link MediaProvider.downloadRecording} when no recording could be returned. */
+export class RecordingDownloadError extends Error {
+  constructor(
+    readonly reason: RecordingDownloadFailureReason,
+    message: string,
+    options?: { cause?: unknown },
+  ) {
+    super(message, options);
+    this.name = "RecordingDownloadError";
+  }
+}
+
+/**
+ * A recording downloaded from the station, as elementary streams.
+ *
+ * `video` is Annex-B H.264 in decode order, `audio` AAC-LC 16 kHz mono in ADTS framing (absent when the
+ * recording carried none that could be decoded). `frames` counts the distinct video frames received,
+ * `missingFrames` the ones the camera numbered but that never arrived, and `durationMs` spans the first
+ * to the last received frame by the camera's own timestamps; `fps` is derived from those two stamps.
+ */
+export interface RecordingDownload {
+  video: Buffer;
+  audio?: Buffer;
+  frames: number;
+  missingFrames: number;
+  durationMs: number;
+  fps: number;
+}
+
+/**
  * How a live stream ended before its first video keyframe: the warm-up deadline elapsed, the source
  * reported an error, or the source ended on its own.
  */
@@ -751,8 +792,8 @@ export interface SharedSourceHints {
    */
   powered?: "wired" | "battery";
   /**
-   * Seconds of already-captured media the pull retains for a later drain; `0`, absent, non-finite and
-   * negative values retain none.
+   * Seconds of already-captured media the pull retains for a later drain; `0`, absent, non-finite,
+   * negative, and windows longer than 2,147,483,647 ms retain none.
    *
    * Retention costs memory on every frame and only a caller knows whether anything will drain it, so it
    * is never assumed. Media can only be retained while the pull is running, so a window answers "what did
@@ -868,6 +909,14 @@ export interface MediaProvider {
    * unbound model has no client), and absent on a device whose talkback wire is unverified.
    */
   talkback?(opts?: { encoder?: AacEncoder } & SharedSourceHints): Promise<TalkbackHandle>;
+  /**
+   * Download one recording the camera's station stored, identified by the recording name and cipher id of
+   * the event. One download runs at a time per station. Rejects with {@link RecordingDownloadError}.
+   * Optional, and absent on a camera whose station's recording download is unverified.
+   */
+  downloadRecording?(
+    opts: { recording: string; cipherId: number; timeoutMs?: number } & AbortableCall,
+  ): Promise<RecordingDownload>;
   /**
    * Generic P2P request/reply query: send a `SET_PAYLOAD` sub-command and resolve with the reply
    * frame's `payload` (the reply whose `cmd` echoes `subCmd`). Transport-only — the caller owns the

@@ -70,4 +70,49 @@ describe("mains-only camera power tier (T84A1 Wall Light Cam S100)", () => {
     vi.spyOn((eufy as any).registry, "list").mockReturnValue([device]);
     expect((eufy as any).stationPower(SN)).toBe("wired");
   });
+
+  it("classifies a T8423 Floodlight S330 as wired despite battery-family parameters", async () => {
+    const sn = "T8423P0000000001";
+    expect(cameraPowerTier(sn, BATTERY_CAPS)).toBe("wired");
+
+    const seen: string[] = [];
+    const media: MediaProvider = {
+      snapshotLive: async (opts) => {
+        seen.push(opts?.powered ?? "missing");
+        return { jpeg: Buffer.alloc(0), width: 1, height: 1 };
+      },
+      live: async (opts) => (seen.push(opts?.powered ?? "missing"), {}) as never,
+      record: async () => Buffer.alloc(0),
+    };
+    const { acts } = bind<CameraActions>(
+      "camera",
+      {
+        channel: 0,
+        codec: "camera",
+        model: "T8423",
+        paramIds: new Set<number>([1101]),
+        capabilities: BATTERY_CAPS,
+      },
+      { media },
+    );
+    await acts.snapshotLive!();
+    await acts.live!();
+    expect(seen).toEqual(["wired", "wired"]);
+
+    const eufy = new EufyMega({ email: "synthetic@example.com", password: "synthetic", autoRealtime: false });
+    const device = {
+      sn,
+      stationSn: sn,
+      model: "T8423",
+      category: "eufy_security",
+      deviceClass: "camera",
+      params: { 1101: "100" },
+      raw: {},
+    } as unknown as EufyDevice;
+    vi.spyOn((eufy as any).registry, "list").mockReturnValue([device]);
+    expect((eufy as any).stationPower(sn)).toBe("wired");
+    expect(
+      Device.fromRecord(sn, { deviceType: 9, model: "T8423", params: { 1101: "100" } }).getProperty("battery"),
+    ).toBeUndefined();
+  });
 });

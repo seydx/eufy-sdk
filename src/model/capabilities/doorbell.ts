@@ -202,7 +202,7 @@ export function parseQuickResponses(
 
 /**
  * `doorbell` — chime / ringtone configuration. CONFIRMED against a real Video Doorbell (T8214):
- * the live ids are the `1702-1719` `CMD_BAT_DOORBELL_*` range (provenance "mega", observed). The
+ * the live ids are the `1702-1719` `CMD_BAT_DOORBELL_*` range, observed on that device. The
  * legacy `2015/2022/1306` ids are excluded — they appear on NO owned device. The button-
  * press *event* (ring) is delivered out-of-band via `CMD_DOORBELL_NOTIFY_PAYLOAD` (1701) /
  * push/MQTT — it is handled by the Phase-1 event normalizers, not as a device-list param.
@@ -223,9 +223,9 @@ export function parseQuickResponses(
 export const DOORBELL_MEMBERS = {
   /**
    * The HOMEBASE as the doorbell's chime — the hub plays the ring, not the wired chime box
-   * `mechanicalChimeSwitch` drives. `provenance` is "verified" on our own decrypt of the app's frame,
-   * not merely the param id observed live: direct-binary `[ch][value][acct]`, 1=on/0=off, the same shape
-   * as its 1703 sibling — captured, not inferred from the shared param range.
+   * `mechanicalChimeSwitch` drives. `provenance` is "verified" on our own decrypt of the app's frame:
+   * direct-binary `[ch][value][acct]`, 1=on/0=off, the same shape as its 1703 sibling — captured, not
+   * inferred from the shared param range.
    */
   chimeSwitch: {
     param: DOORBELL_CMD.CHIME_SWITCH,
@@ -238,9 +238,8 @@ export const DOORBELL_MEMBERS = {
     write: (v, ctx) => setScalar(DOORBELL_CMD.CHIME_SWITCH, asBool(v) ? 1 : 0, ctx, "direct-binary"),
   },
   /**
-   * `provenance` is "verified" not "mega": the actual write wire is confirmed (
-   * our own P2P decrypt), not merely the param id observed on a live device. Direct-binary
-   * `[ch][value][acct]`, 1=on/0=off — verified live on a T8214 (ON then OFF).
+   * `provenance` is "verified" on our own P2P decrypt of the write wire: direct-binary
+   * `[ch][value][acct]`, 1=on/0=off, verified live on a T8214 (ON then OFF).
    */
   mechanicalChimeSwitch: {
     param: DOORBELL_CMD.MECHANICAL_CHIME_SWITCH,
@@ -274,7 +273,7 @@ export const DOORBELL_MEMBERS = {
     type: "number",
     unit: "%",
     kind: "percent",
-    provenance: "mega",
+    provenance: "verified",
     writtenElsewhere: true,
     description:
       "Ringtone volume (1708; confirmed on T8214, observed value 80). The WRITE is `audio`'s " +
@@ -406,7 +405,7 @@ export const DOORBELL_MEMBERS = {
     param: 1710,
     type: "string",
     kind: "text",
-    provenance: "mega",
+    provenance: "verified",
     description:
       "Notification config JSON {notification_motion_onoff,notification_ring_onoff," +
       "notification_style} (1710; confirmed on T8214).",

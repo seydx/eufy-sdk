@@ -15,12 +15,17 @@ const MAX_JPEG_BYTES = 10 * 1024 * 1024;
  */
 const MAX_REMEMBERED_URLS = 64;
 
+/** A 404 is attempted again after each delay; any other failure ends on the first attempt. */
+const NOT_YET_PUBLISHED_RETRY_MS = [2_000, 4_000];
+
 type Candidate = {
   deviceKey: string;
   url: string;
   sequence: number;
   observedAt: number;
   generation: number;
+  /** Retries already spent on this candidate, see {@link NOT_YET_PUBLISHED_RETRY_MS}. */
+  retries: number;
 };
 
 type DeviceState = {
@@ -30,6 +35,8 @@ type DeviceState = {
   loggedFailures: Map<StoredSnapshotUnavailableReason, number>;
   queued?: Candidate;
   inFlight?: Candidate;
+  /** The timer of a candidate waiting out {@link NOT_YET_PUBLISHED_RETRY_MS} before its next attempt. */
+  retrying?: ReturnType<typeof setTimeout>;
   retained?: { sequence: number; image: Buffer };
   reason?: StoredSnapshotUnavailableReason;
   lifecycleError?: unknown;
@@ -71,6 +78,8 @@ export class StoredImageCache {
     }
     if (state.seenUrls.has(url)) return;
     state.seenUrls.add(url);
+    clearTimeout(state.retrying);
+    state.retrying = undefined;
     while (state.seenUrls.size > MAX_REMEMBERED_URLS) {
       const oldest = state.seenUrls.values().next();
       if (oldest.done) break;
@@ -82,6 +91,7 @@ export class StoredImageCache {
       sequence: ++state.nextSequence,
       observedAt: this.clock(),
       generation: this.generation,
+      retries: 0,
     };
     this.pump();
   }
@@ -89,7 +99,7 @@ export class StoredImageCache {
   /** Return retained bytes without starting or awaiting network work. */
   snapshotStored(deviceKey: string): Promise<Buffer> {
     const state = this.devices.get(deviceKey);
-    const reason = state?.queued || state?.inFlight ? "pending" : (state?.reason ?? "not-observed");
+    const reason = state?.queued || state?.inFlight || state?.retrying ? "pending" : (state?.reason ?? "not-observed");
     if (reason !== "pending" && state?.lifecycleError) return Promise.reject(state.lifecycleError);
     if (state?.retained) return Promise.resolve(state.retained.image);
     return Promise.reject(new StoredSnapshotUnavailableError(reason, "No stored snapshot is available"));
@@ -128,6 +138,8 @@ export class StoredImageCache {
       if (error !== undefined && this.isLifecycleError(error)) {
         state.lifecycleError = error;
         state.reason = undefined;
+      } else if (image === undefined && this.retryLater(state, candidate, error)) {
+        state.lifecycleError = undefined;
       } else if (image === undefined) {
         state.lifecycleError = undefined;
         state.reason = "download-failed";
@@ -143,6 +155,21 @@ export class StoredImageCache {
       }
     }
     this.pump();
+  }
+
+  /** Schedule the next attempt after a 404; answers whether one was scheduled. */
+  private retryLater(state: DeviceState, candidate: Candidate, error: unknown): boolean {
+    const delay = NOT_YET_PUBLISHED_RETRY_MS[candidate.retries];
+    const tag = mediaFailureTag(error);
+    if (delay === undefined || tag.cause !== "http-status" || tag.status !== 404 || state.queued) return false;
+    const timer = setTimeout(() => {
+      state.retrying = undefined;
+      state.queued = { ...candidate, retries: candidate.retries + 1 };
+      this.pump();
+    }, delay);
+    timer.unref?.();
+    state.retrying = timer;
+    return true;
   }
 
   private isValidJpeg(image: Buffer): boolean {

@@ -87,7 +87,7 @@ describe("battery capability module", () => {
       new Set(propertiesOf(BATTERY.members!, { model } as AvailabilityContext).map((p) => p.paramType));
 
     // T8425 Floodlight, T8419 Indoor, T8410 Indoor Pan & Tilt — all mains-only.
-    for (const model of ["T8425P00", "T8419P00", "T8410P00"]) {
+    for (const model of ["T8425P00", "T8419P00", "T8410P00", "T8423P00"]) {
       for (const param of CELL_PARAMS) {
         expect(published(model), `${model} still publishes ${param}`).not.toContain(param);
       }

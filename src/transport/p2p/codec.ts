@@ -38,6 +38,11 @@ export const ResponseMessageType = {
   LOOKUP_ADDR: Buffer.from([0xf1, 0x40]),
   LOOKUP_ADDR2: Buffer.from([0xf1, 0x82]),
   CAM_ID: Buffer.from([0xf1, 0x42]),
+  /**
+   * The device's own address record, sent in answer to CHECK_CAM ahead of CAM_ID: its 20-byte device id, one
+   * record in `encodeSelfAddress`'s shape naming the address it answers from, then 8 zero bytes (44-byte payload).
+   */
+  CAM_ADDR: Buffer.from([0xf1, 0x43]),
   TURN_SERVER_CAM_ID: Buffer.from([0xf1, 0x84]),
   PING: Buffer.from([0xf1, 0xe0]),
   PONG: Buffer.from([0xf1, 0xe1]),
@@ -383,6 +388,26 @@ export function buildIntStringCommandPayload(
     Buffer.from([0x00, 0x00]),
     data,
   ]);
+}
+
+/**
+ * Build a **string-pair** command body: five zero bytes, then `strValue` and `strValueSub`, each in the
+ * 128-byte-chunk length form ({@link stringWithLength}), AES-128-ECB encrypted (level-1) like
+ * {@link buildStringCommandPayload} when `key` is given. `CMD_DOWNLOAD_VIDEO` (1024) takes this shape on a
+ * HomeBase 2: `strValue` = the recording's path on the station, `strValueSub` = the station admin
+ * `account_id`, on the camera's channel.
+ */
+export function buildStringPairCommandPayload(
+  strValue: string,
+  strValueSub: string,
+  channel = 0,
+  key?: Buffer,
+  encType = 1,
+): Buffer {
+  const encrypted = !!key && key.length === 16;
+  const body = Buffer.concat([Buffer.alloc(5), stringWithLength(strValue), stringWithLength(strValueSub)]);
+  const data = encrypted ? encryptP2PData(paddingP2PData(body), key!) : body;
+  return buildRawCommandPayload(data, channel, encrypted ? encType : 0);
 }
 
 /**
