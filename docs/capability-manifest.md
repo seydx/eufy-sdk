@@ -53,8 +53,9 @@ See `examples/10-describe-device.ts` for the runnable version, which also reads 
 ```
 
 `accessor` is how you get back to the live object: `dev[cap.accessor]()` returns the capability object,
-and `r.accessor` is the getter on it. `property` is the same value's name in the flat
-[`getProperty`](/devices) namespace.
+and `r.accessor` is the getter on it. An events-only entry has no `accessor` — a capability whose whole
+surface is inbound events binds no object to reach, and is described for its `events` alone. `property`
+is the same value's name in the flat [`getProperty`](/devices) namespace.
 
 `kind` is what the value **means** — a percentage, a temperature, an instant, one of a fixed set. It is
 the field a control surface is built from; [what a reading means](/value-kinds) covers the vocabulary

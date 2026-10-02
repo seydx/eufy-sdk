@@ -46,14 +46,22 @@ describe("the lookup channels a connect can ask on", () => {
     expect(await channelsTraced({ localAddress: "192.0.2.1" })).toMatchObject({ local: true, cloud: false });
   });
 
-  it("counts the cloud channel only where both a key and an address to ask are held", async () => {
-    expect(await channelsTraced({ dskKey: "0".repeat(40) })).toMatchObject({ cloud: false });
+  it("counts the cloud channel only where both a key and an address to ask are held, naming the one missing", async () => {
+    expect(await channelsTraced({ dskKey: "0".repeat(40) })).toMatchObject({
+      cloud: false,
+      cloudMissing: "cloud-addresses",
+    });
     expect(await channelsTraced({ cloudAddresses: [{ host: "192.0.2.2", port: 32100 }] })).toMatchObject({
       cloud: false,
+      cloudMissing: "dsk-key",
     });
-    expect(
-      await channelsTraced({ dskKey: "0".repeat(40), cloudAddresses: [{ host: "192.0.2.2", port: 32100 }] }),
-    ).toMatchObject({ cloud: true });
+    expect(await channelsTraced({})).toMatchObject({ cloud: false, cloudMissing: "dsk-key" });
+    const both = await channelsTraced({
+      dskKey: "0".repeat(40),
+      cloudAddresses: [{ host: "192.0.2.2", port: 32100 }],
+    });
+    expect(both).toMatchObject({ cloud: true });
+    expect(both).not.toHaveProperty("cloudMissing");
   });
 });
 

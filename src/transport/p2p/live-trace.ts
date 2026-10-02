@@ -44,8 +44,12 @@ export type LiveTrace =
    * an address to ask. A connect that had one channel failed for that channel's reason alone, and a connect
    * that had neither could not have succeeded — outcomes a station that is switched off is otherwise
    * indistinguishable from, because nothing else in a failed connect states what was even attempted.
+   *
+   * `cloudMissing` names the input the cloud channel lacked, present exactly when `cloud` is false: `dsk-key`
+   * where no key was held for the station, `cloud-addresses` where its record named no address to ask. The key
+   * is named where both are absent.
    */
-  | { phase: "lookup-channels"; local: boolean; cloud: boolean }
+  | { phase: "lookup-channels"; local: boolean; cloud: boolean; cloudMissing?: "dsk-key" | "cloud-addresses" }
   /**
    * Work on a station is holding for its session to connect, with the milliseconds it will wait.
    *

@@ -66,8 +66,14 @@ export interface ActionDescriptor extends ActionSpec {
 /** What one capability exposes on a device — the join of its bound object and its own declaration. */
 export interface CapabilityDescriptor {
   capability: Capability;
-  /** The fluent accessor this capability is reached under: `dev[accessor]()`. */
-  accessor: string;
+  /**
+   * The fluent accessor this capability is reached under: `dev[accessor]()`.
+   *
+   * Absent for a capability with nothing to bind — one whose whole surface is inbound events, so it
+   * declares no members and no `actions()` and therefore has no object to reach. Such a capability is
+   * described for its {@link events} alone; every other field is empty.
+   */
+  accessor?: string;
   /** The reads INSTALLED on this device, never the theoretical set. */
   reads: readonly ReadDescriptor[];
   /** The installed actions that carry a description. */
@@ -109,6 +115,16 @@ export interface DeviceManifest {
  * Parameterised over the module list; the barrel binds it to the real one. A capability the device did
  * not bind — because it does not have it, or because nothing is bound yet — contributes no descriptor
  * at all.
+ *
+ * With ONE exception, and it is not a bound object: a capability whose whole surface is inbound events
+ * declares no members and no `actions()`, so `buildActions` builds nothing for it and there is no
+ * object here to walk. Its events are still device truth, and the resolved set in {@link
+ * AvailabilityContext.capabilities} is what says this device has it — so it is described from its own
+ * declaration, with no {@link CapabilityDescriptor.accessor} and every other field empty, and only on
+ * a device with at least one bound object.
+ *
+ * Claims resolve against an empty read set there, which is the truthful evidence — a module that binds
+ * nothing installs no getter, so a `reads` claim cannot hold. A topology claim still applies.
  * @internal
  */
 export function describeBound(
@@ -117,10 +133,17 @@ export function describeBound(
   ctx?: AvailabilityContext,
 ): CapabilityDescriptor[] {
   const out: CapabilityDescriptor[] = [];
+  const anyBound = Object.values(bound).some((obj) => obj && typeof obj === "object");
   for (const m of modules) {
     const accessor = camelCase(m.capability);
     const obj = bound[accessor];
-    if (!obj || typeof obj !== "object") continue;
+    if (!obj || typeof obj !== "object") {
+      const events = anyBound ? emitsOf(m, [], ctx) : [];
+      if (events.length && ctx?.capabilities?.has(m.capability)) {
+        out.push({ capability: m.capability, reads: [], actions: [], undescribedActions: [], events });
+      }
+      continue;
+    }
     const descriptors = Object.getOwnPropertyDescriptors(obj);
     const reads: ReadDescriptor[] = [];
     const actions: ActionDescriptor[] = [];

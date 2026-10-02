@@ -188,11 +188,15 @@ describe("push events reach the pre-warm policy", () => {
   beforeEach(() => vi.restoreAllMocks());
 
   const MOTION_PUSH_EVENT = 3101;
+  const UNKNOWN_SN = "T8000P0000000009";
 
-  it("offers each decoded event and its device to the policy", async () => {
+  /** A client whose push channel is started against persisted credentials, with the socket answered locally. */
+  async function startedPush(capabilitiesForDevice: (sn: string) => Set<string> | undefined) {
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
     const eufy = new EufyMega({
       email: "t@example.com",
       password: "x",
+      logger,
       pushStore: {
         load: () => ({
           creds: { fid: "f", androidId: "0", securityToken: "0", fcmToken: "t", createdAt: 0 },
@@ -207,15 +211,38 @@ describe("push events reach the pre-warm policy", () => {
       get: () => ({ userId: "u", authToken: "t" }),
     });
     vi.spyOn((eufy as any).mega, "registerPushToken").mockResolvedValue(undefined);
-    vi.spyOn((eufy as any).registry, "capabilitiesForDevice").mockReturnValue(new Set(["motion"]));
+    vi.spyOn((eufy as any).registry, "capabilitiesForDevice").mockImplementation(capabilitiesForDevice as never);
     vi.spyOn(PushClient.prototype, "connect").mockImplementation(function (this: PushClient) {
       this.emit("connect");
     });
     const policy = vi.spyOn(eufy as any, "prewarmForEvent").mockReturnValue(undefined);
+    return { client: await (eufy as any).startPush(), policy, logger };
+  }
 
-    const client = await (eufy as any).startPush();
+  it("offers each decoded event and its device to the policy", async () => {
+    const { client, policy } = await startedPush(() => new Set(["motion"]));
     client.emit("push", { deviceSn: SOLO_BATTERY_SN, eventType: MOTION_PUSH_EVENT, payload: {} });
 
     expect(policy).toHaveBeenCalledWith("motion", SOLO_BATTERY_SN);
+  });
+
+  /**
+   * Every push leaves one debug record of what its serial named and how many semantic events it decoded
+   * to, so a push that arrived and mapped to nothing is told apart from one that never arrived. The record
+   * never carries the serial.
+   */
+  it("logs each push with the device it named and its event count, without the serial", async () => {
+    const { client, logger } = await startedPush((sn) => (sn === SOLO_BATTERY_SN ? new Set(["motion"]) : undefined));
+    client.emit("push", { deviceSn: SOLO_BATTERY_SN, eventType: MOTION_PUSH_EVENT, payload: {} });
+    client.emit("push", { deviceSn: UNKNOWN_SN, eventType: MOTION_PUSH_EVENT, payload: {} });
+    client.emit("push", { payload: {} });
+
+    const lines = logger.debug.mock.calls.map(([m]) => m as string).filter((m) => m.startsWith("[push] in:"));
+    expect(lines).toEqual([
+      "[push] in: eventType=3101 device=known events=1",
+      "[push] in: eventType=3101 device=unknown events=1",
+      "[push] in: eventType=undefined device=none events=0",
+    ]);
+    expect(lines.join()).not.toMatch(/T8000P/);
   });
 });

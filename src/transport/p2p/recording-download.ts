@@ -5,7 +5,7 @@
  * ({@link buildStringPairCommandPayload}) on the camera's channel. The station answers on
  * {@link RECORDING_DATA_TYPE}, tagged with that channel, with the recording's `CMD_VIDEO_FRAME` (1300) and
  * `CMD_AUDIO_FRAME` (1301) frames, faster than real time, then `CMD_DOWNLOAD_FINISH` (1304) on the control
- * data type, with the same channel.
+ * data type, tagged with channel 0 whatever the camera's channel.
  *
  * Frame layouts:
  *
@@ -14,14 +14,14 @@
  * video, other frames: the same 22B header (u32@0 = len · u16@6 = frame number · u48@0x0e = stamp in ms),
  *   then len bytes of plaintext H.264
  * audio: 16B header (u32@0 = len · u8@5 = codec, 0 = AAC-LC), then 16B GCM tag, 12B GCM nonce and len
- *   bytes of AES-256-GCM raw AAC under the media key of the preceding keyframe, AAD as live video
+ *   bytes of AES-256-GCM AAC under the media key of the preceding keyframe, AAD as live video; the
+ *   plaintext is a whole ADTS frame, header included
  * ```
  *
  * @module p2p/recording-download
  */
 import { createDecipheriv } from "node:crypto";
 import { RecordingDownloadError, type RecordingDownload } from "../../core/contracts.js";
-import { buildAdtsHeader } from "./adts.js";
 import { CommandType } from "./commands.js";
 import type { P2PFrame, P2PSession } from "./p2p-session.js";
 import { VIDEO_GCM_AAD, VideoFrameDecoder, parseVideoFrameHeader } from "./video.js";
@@ -38,6 +38,8 @@ const AUDIO_NONCE_START = 32;
 const AUDIO_BODY_START = 44;
 /** Audio codec id for AAC-LC in the audio frame header. */
 const AUDIO_CODEC_AAC_LC = 0;
+/** Channel 0, the one a HomeBase tags `CMD_DOWNLOAD_FINISH` with whatever the camera's channel. */
+const FINISH_CHANNEL = 0;
 /** How long the station may take to send the first frame of a recording. */
 const FIRST_FRAME_WAIT_MS = 20_000;
 /**
@@ -84,7 +86,7 @@ export interface RecordingTransfer {
 /**
  * Request one recording and collect its frames until `CMD_DOWNLOAD_FINISH`. Only frames on
  * {@link RECORDING_DATA_TYPE} tagged with the camera's channel belong to it, so a live stream open on the same
- * station is never mixed in.
+ * station is never mixed in. The finish frame is taken on the camera's channel or channel 0.
  *
  * `frames` rejects with {@link RecordingDownloadError}: `no-data` when nothing arrives within
  * {@link FIRST_FRAME_WAIT_MS}, and `incomplete` when the transfer ends without its finish frame, on a
@@ -134,12 +136,13 @@ export function receiveRecording(
     collected = [];
   };
   const onData = (frame: P2PFrame) => {
-    if (frame.channel !== request.channel) return;
     if (frame.commandId === CommandType.CMD_DOWNLOAD_FINISH) {
+      if (frame.channel !== request.channel && frame.channel !== FINISH_CHANNEL) return;
       if (draining) incomplete(draining);
       else deliver();
       return stop();
     }
+    if (frame.channel !== request.channel) return;
     if (frame.commandId !== CommandType.CMD_VIDEO_FRAME && frame.commandId !== CommandType.CMD_AUDIO_FRAME) return;
     if (frame.dataType !== RECORDING_DATA_TYPE) return;
     received = true;
@@ -237,7 +240,7 @@ export function decodeRecording(frames: readonly RecordingFrame[], eccPrivateKey
         raw.subarray(AUDIO_HEADER_LEN, AUDIO_NONCE_START),
         raw.subarray(AUDIO_BODY_START, AUDIO_BODY_START + len),
       );
-      if (aac?.length) audio.push(buildAdtsHeader(aac.length), aac);
+      if (aac?.length) audio.push(aac);
     }
   }
   if (!video.length) throw new RecordingDownloadError("undecodable", "no video frame of the recording decoded");

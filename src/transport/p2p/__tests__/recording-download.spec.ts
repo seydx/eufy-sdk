@@ -1,7 +1,6 @@
 import { EventEmitter } from "node:events";
 import { randomBytes } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { parseAdtsHeader, isSupportedAdts } from "../adts.js";
 import { buildStringPairCommandPayload, decryptP2PData } from "../codec.js";
 import {
   MAX_TRANSFER_BYTES,
@@ -12,6 +11,12 @@ import {
 } from "../recording-download.js";
 import type { P2PSession } from "../p2p-session.js";
 import { IDR, audioFrame, camera, keyframe, plainFrame, slice } from "./recording-fixtures.js";
+
+/** The 7-byte ADTS header of one AAC-LC 16 kHz mono frame of `n` payload bytes, as the camera sends it. */
+const adtsHeader = (n: number) => {
+  const l = n + 7;
+  return Buffer.from([0xff, 0xf1, 0x60, 0x40 | (l >> 11), (l >> 3) & 0xff, ((l & 7) << 5) | 0x1f, 0xfc]);
+};
 
 describe("recording download", () => {
   afterEach(() => {
@@ -43,7 +48,7 @@ describe("recording download", () => {
     const { eccHex, publicKey } = camera();
     const first = randomBytes(32);
     const second = randomBytes(32);
-    const aac = [Buffer.alloc(180, 1), Buffer.alloc(190, 2), Buffer.alloc(170, 3)];
+    const aac = [180, 190, 170].map((n, i) => Buffer.concat([adtsHeader(n), Buffer.alloc(n, i + 1)]));
     const frames = [
       keyframe(first, publicKey, IDR, 0, 1_000),
       audioFrame(first, aac[0]!),
@@ -60,14 +65,7 @@ describe("recording download", () => {
     expect(out.video).toEqual(Buffer.concat([IDR, slice(1), slice(2), IDR, slice(4)]));
     expect(out).toMatchObject({ frames: 5, missingFrames: 0, durationMs: 267 });
     expect(out.fps).toBeCloseTo(4 / 0.267, 1);
-    let offset = 0;
-    for (const payload of aac) {
-      const header = parseAdtsHeader(out.audio!, offset)!;
-      expect(isSupportedAdts(header)).toBe(true);
-      expect(out.audio!.subarray(offset + header.headerLength, offset + header.frameLength)).toEqual(payload);
-      offset += header.frameLength;
-    }
-    expect(offset).toBe(out.audio!.length);
+    expect(out.audio).toEqual(Buffer.concat(aac));
   });
 
   it("counts the frames the camera numbered but that never arrived", () => {
@@ -145,6 +143,25 @@ describe("recording download", () => {
 
       expect(session.sent).toEqual([[1024, "/media/mmcblk0p1/Camera01/20260101120000.dat", "0".repeat(40), 1]]);
       expect(frames.map((f) => f.commandId)).toEqual([1300, 1301, 1300]);
+      expect(session.listenerCount("data")).toBe(0);
+    });
+
+    it("ends on the finish frame tagged with channel 0, for a camera on channel 1", async () => {
+      vi.useFakeTimers();
+      const session = station((s) => {
+        s.emit("data", frame(1300, { channel: 1 }));
+        s.emit("data", frame(1301, { channel: 1 }));
+        s.emit("data", frame(1304, { channel: 0, dataType: 2 }));
+      });
+
+      const transfer = receiveRecording(session as unknown as P2PSession, { ...request, channel: 1 });
+      const outcome = transfer.frames.then(
+        (frames) => frames.map((f) => f.commandId),
+        (error: { reason?: string }) => error.reason,
+      );
+      await vi.advanceTimersByTimeAsync(16_000);
+
+      expect(await outcome).toEqual([1300, 1301]);
       expect(session.listenerCount("data")).toBe(0);
     });
 

@@ -449,8 +449,8 @@ export class P2PSession extends EventEmitter {
   private audioStalled = false;
   private audioRetransmitTimer?: ReturnType<typeof setInterval>;
   private lastPongData?: Buffer;
-  /** When this connection last received a PONG — `undefined` until the first, see {@link pathSilentMs}. */
-  private lastPongAt?: number;
+  /** When the selected peer last answered outbound P2P traffic on this connection. */
+  private lastPeerAt?: number;
   /** Whether the silence has already been stated, so it is traced once per connection rather than per read. */
   private pathStaleTraced = false;
   private lookupTimer?: ReturnType<typeof setInterval>;
@@ -525,18 +525,18 @@ export class P2PSession extends EventEmitter {
   /**
    * How long this connection's path has been silent, or nothing where it has never answered.
    *
-   * A PONG is the station stating that the path is alive. `undefined` is neither alive nor dead: it is a station
-   * that has said nothing either way.
+   * PONG and ACK from the selected peer prove the path answers outbound traffic. `undefined` means no such reply
+   * has arrived since connection, so silence alone does not establish a stale path.
    */
   get pathSilentMs(): number | undefined {
-    return this.lastPongAt === undefined ? undefined : Date.now() - this.lastPongAt;
+    return this.lastPeerAt === undefined ? undefined : Date.now() - this.lastPeerAt;
   }
 
   /**
    * Whether this path can still be committed to, on the evidence the heartbeat gives.
    *
-   * False where a pong arrived and then stopped for {@link PATH_SILENCE_MS}. A station that has never ponged is
-   * not known to be dead, so it answers true.
+   * False where selected-peer replies arrived and then stopped for {@link PATH_SILENCE_MS}. A connection with
+   * no post-connect reply is not known to be dead, so it answers true.
    *
    * Traces the silence once per connection, on the read that first observes it.
    */
@@ -819,6 +819,7 @@ export class P2PSession extends EventEmitter {
       phase: "lookup-channels",
       local: !this.cfg.noBroadcast || this.cfg.localAddress !== undefined,
       cloud: this.cloudLookup !== undefined,
+      ...(this.cloudLookup ? {} : { cloudMissing: dskKey ? "cloud-addresses" : "dsk-key" }),
     });
     this.sendLookups();
     this.lookupTimer = setInterval(() => this.sendLookups(), LOOKUP_RETRY_MS);
@@ -942,6 +943,12 @@ export class P2PSession extends EventEmitter {
    */
   private onMessage(msg: Buffer, rinfo: dgram.RemoteInfo, socket = this.socket): void {
     if (!socket) return;
+    const fromConnectedPeer =
+      this.connected && this.connectAddress?.host === rinfo.address && this.connectAddress.port === rinfo.port;
+    if (fromConnectedPeer && (hasHeader(msg, ResponseMessageType.PONG) || hasHeader(msg, ResponseMessageType.ACK))) {
+      this.lastPeerAt = Date.now();
+      this.pathStaleTraced = false;
+    }
     if (!hasHeader(msg, ResponseMessageType.DATA)) {
       this.logger.debug(
         `[p2p] ${this.cfg.stationSn} <<< ${rinfo.address}:${rinfo.port} header=${msg.subarray(0, 2).toString("hex")} len=${msg.length}`,
@@ -961,8 +968,6 @@ export class P2PSession extends EventEmitter {
       this.onConnected({ host: rinfo.address, port: rinfo.port }, socket);
     } else if (hasHeader(msg, ResponseMessageType.PONG)) {
       this.lastPongData = msg.length > 4 ? msg.subarray(4) : undefined;
-      this.lastPongAt = Date.now();
-      this.pathStaleTraced = false;
     } else if (hasHeader(msg, ResponseMessageType.PING)) {
       this.send({ host: rinfo.address, port: rinfo.port }, RequestMessageType.PONG, undefined, socket); // echo
     } else if (hasHeader(msg, ResponseMessageType.ACK)) {
