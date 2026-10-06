@@ -279,7 +279,7 @@ export class LiveStream extends EventEmitter {
     if (this.stallTimer) clearTimeout(this.stallTimer);
     this.stallTimer = undefined;
     try {
-      this.session.stopLiveMedia(this.opts.channel, this.opts.accountId);
+      this.session.stopLiveMedia(this.opts.channel, this.opts.accountId, this.opts.homeBaseAttached);
     } catch (e) {
       this.logger.debug(`[live] stopLiveMedia ignored: ${e instanceof Error ? e.message : e}`);
     }

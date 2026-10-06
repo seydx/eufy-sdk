@@ -119,10 +119,10 @@ describe("P2P data reassembly", () => {
       feed(dataPacket(42, commandFrame(42, 1300, Buffer.from([2]))));
       feed(dataPacket(44, commandFrame(44, 1300, Buffer.from([4]))));
 
-      vi.advanceTimersByTime(240);
+      vi.advanceTimersByTime(690);
       feed(dataPacket(41, commandFrame(41, 1300, Buffer.from([1]))));
       expect(received.map((frame) => frame.raw[0])).toEqual([0, 1, 2]);
-      vi.advanceTimersByTime(249);
+      vi.advanceTimersByTime(699);
       expect(received.map((frame) => frame.raw[0])).toEqual([0, 1, 2]);
       vi.advanceTimersToNextTimer();
       expect(received.map((frame) => frame.raw[0])).toEqual([0, 1, 2, 4]);

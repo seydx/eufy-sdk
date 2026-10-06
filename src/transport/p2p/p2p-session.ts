@@ -210,22 +210,23 @@ const STALE_RETRANSMIT_DEPTH = 1024;
 
 /** Additional UDP source ports registered alongside the session's own during cloud lookup. */
 const PUNCH_PROBE_SOCKETS = 7;
+/** Chosen maximum wait for a missing datagram; 250 ms is not a measured device resend delay. */
+const REORDER_WAIT_MS = 250;
 /**
- * How long datagrams that arrived ahead of a missing one are held for the device to repeat the missing one.
+ * Maximum wait for a missing video datagram.
  *
  * The device repeats a datagram until it is acknowledged, so a hole in the numbering is normally filled
  * later. Measured on an own-session camera streaming over Wi-Fi for 180 s: 906 holes, every one filled,
  * open for 29 ms at the median, 289 ms at the 90th percentile, 1091 ms at the 99th and 1701 ms at the
  * longest. A 1 s wait on the same camera still gave up 12 holes in 3 minutes, each costing the frames up to
- * the next keyframe. Past this window the hole is taken as lost and reassembly resumes from the datagrams
- * held behind it.
+ * the next keyframe.
  */
-const REORDER_WAIT_MS = 5000;
+const VIDEO_REORDER_WAIT_MS = 5000;
 /**
  * Maximum later datagrams held behind a hole, bounding retained memory and the delay before resuming.
  *
- * Sized for the wait above, not below it: a live stream keeps sending while the hole is open, so a hole
- * that stays open for 1.7 s on that camera already has a few hundred datagrams held behind it.
+ * Sized for the video wait above: a live stream keeps sending while the hole is open, so a hole that stays
+ * open for 1.7 s on that camera already has a few hundred datagrams held behind it.
  */
 const REORDER_MAX_DATAGRAMS = 2048;
 /**
@@ -1369,8 +1370,17 @@ export class P2PSession extends EventEmitter {
     return true;
   }
 
-  /** Stop the realtime media stream (`CMD_STOP_REALTIME_MEDIA`, 1004) on a camera `channel`. */
-  stopLiveMedia(channel: number = STATION_CHANNEL, accountId = ""): void {
+  /**
+   * Stop the realtime media stream (`CMD_STOP_REALTIME_MEDIA`, 1004) on a camera `channel`, in the shape
+   * its runtime topology takes, as {@link startLiveMedia} selects its start:
+   *  - `homeBaseAttached`: `CMD_SET_PAYLOAD` (1350) wrapping `{cmd:1004, mChannel:channel}` at level-2.
+   *  - own-session at level-2: the direct 1004 frame whose entire plaintext is the camera channel as a
+   *    `uint32`, the same 4-byte body as the attached talkback frames. The app sends this frame on closing
+   *    an own-session camera's live view; the camera stops streaming on it within a second, and keeps
+   *    streaming through the 1350-wrapped form.
+   *  - without a level-2 key: the bare 1004 command.
+   */
+  stopLiveMedia(channel: number = STATION_CHANNEL, accountId = "", homeBaseAttached = false): void {
     this.liveStartedChannels.delete(channel);
     for (const [sequence, pending] of this.unackedLiveStarts) {
       if (pending.channel === channel) this.unackedLiveStarts.delete(sequence);
@@ -1379,7 +1389,11 @@ export class P2PSession extends EventEmitter {
       clearInterval(this.liveStartRetransmitTimer);
       this.liveStartRetransmitTimer = undefined;
     }
-    if (this.level2Key) {
+    if (this.level2Key && !homeBaseAttached) {
+      const body = Buffer.allocUnsafe(4);
+      body.writeUInt32LE(channel >>> 0, 0);
+      this.sendRawLevel2Bytes(body, channel, CMD_STOP_REALTIME_MEDIA, 8);
+    } else if (this.level2Key) {
       this.sendMediaPayloadLevel2(CMD_STOP_REALTIME_MEDIA, channel, accountId, {});
     } else {
       this.sendCommand(CMD_STOP_REALTIME_MEDIA, channel);
@@ -1947,7 +1961,7 @@ export class P2PSession extends EventEmitter {
    * if the missing one arrives. A logical frame's payload spans datagrams that carry no header of their
    * own, so reassembling around a hole is impossible; waiting for it is what keeps the frame whole.
    *
-   * Only once {@link REORDER_WAIT_MS} passes, or {@link REORDER_MAX_DATAGRAMS} pile up, is the datagram
+   * Only once the data type's reorder wait passes, or {@link REORDER_MAX_DATAGRAMS} pile up, is the datagram
    * treated as lost: a pending frame is discarded and delivery resumes from the earliest held datagram.
    */
   private onData(msg: Buffer, addr: Address): void {
@@ -1998,10 +2012,13 @@ export class P2PSession extends EventEmitter {
   private armReorderTimer(dataType: number): void {
     const reorder = this.reorderByType.get(dataType);
     if (!reorder?.held.size || reorder.timer) return;
-    const timer = setTimeout(() => {
-      reorder.timer = undefined;
-      this.abandonHole(dataType);
-    }, REORDER_WAIT_MS);
+    const timer = setTimeout(
+      () => {
+        reorder.timer = undefined;
+        this.abandonHole(dataType);
+      },
+      dataType === P2PDataType.VIDEO ? VIDEO_REORDER_WAIT_MS : REORDER_WAIT_MS,
+    );
     timer.unref?.();
     reorder.timer = timer;
   }

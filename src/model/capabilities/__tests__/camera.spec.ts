@@ -394,6 +394,30 @@ describe("camera capability module", () => {
       });
     });
 
+    // Live: a HomeBase-attached T8400 reports 1035="0" while on — the disable bit its read already decodes.
+    it("indoor cam reporting 1035 itself (T8400, type 30): disable bit → ON ⇒ 0, OFF ⇒ 1", () => {
+      const reports1035 = ctx(1, { deviceType: 30, model: "T8400", paramIds: new Set([CAMERA_CMD.CAMERA_ENABLE]) });
+      expect(buildCommand("on", true, reports1035)).toMatchObject({ value: 0 });
+      expect(buildCommand("off", false, reports1035)).toMatchObject({ value: 1 });
+      expect(CAMERA_MEMBERS.enabled.observation.reflects(true, reports1035)).toEqual({
+        param: CAMERA_CMD.CAMERA_ENABLE,
+        expected: 0,
+        observed: true,
+      });
+    });
+
+    // Only the T8400 was measured; #304 reports a T8030-attached T8410 whose 1035 reads as an enable bit.
+    it("other indoor types reporting 1035 (T8410, type 31) keep the enable bit → ON ⇒ 1, OFF ⇒ 0", () => {
+      const reports1035 = ctx(1, { deviceType: 31, model: "T8410", paramIds: new Set([CAMERA_CMD.CAMERA_ENABLE]) });
+      expect(buildCommand("on", true, reports1035)).toMatchObject({ value: 1 });
+      expect(buildCommand("off", false, reports1035)).toMatchObject({ value: 0 });
+    });
+
+    it("indoor cam (T8400, type 30) not reporting 1035 keeps the enable bit → ON ⇒ 1, OFF ⇒ 0", () => {
+      expect(buildCommand("on", true, ctx(0, { deviceType: 30, model: "T8400" }))).toMatchObject({ value: 1 });
+      expect(buildCommand("off", false, ctx(0, { deviceType: 30, model: "T8400" }))).toMatchObject({ value: 0 });
+    });
+
     it("floodlight cams 8422/8424 flip to enable bit → ON ⇒ 1", () => {
       expect(buildCommand("on", true, ctx(0, { deviceType: 37, model: "T8422" }))).toMatchObject({ value: 1 });
       expect(buildCommand("on", true, ctx(0, { deviceType: 39, model: "T8424" }))).toMatchObject({ value: 1 });
@@ -404,13 +428,13 @@ describe("camera capability module", () => {
     });
 
     /**
-     * Every family writes the on/off param, the privacy envelope (6250) none of them.
+     * These captured families retain the on/off param route.
      *
      * Confirmed against the current app's own frames: across six cameras of four device types and both
      * topologies every on/off it sent was `1035`, and the capture carries no `6250` frame. The envelope also
      * has no level-1 form, so it is unsendable on a session that never negotiates a key.
      */
-    it("every family writes the on/off param, none the privacy envelope", () => {
+    it("the remaining captured families write the on/off param", () => {
       for (const deviceType of [
         DeviceType.INDOOR_COST_DOWN_CAMERA,
         DeviceType.INDOOR_PT_CAMERA_S350,

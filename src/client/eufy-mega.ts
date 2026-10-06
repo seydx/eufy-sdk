@@ -2101,6 +2101,7 @@ export class EufyMega extends EventEmitter {
       model: rec.model,
       category: dev.category,
       serial: sn,
+      stationSerial: rec.parentSn,
       // Identity metadata for `info`, for a host's device-registry surface. `name` = the app-shown
       // device_name (registry's `name`), not the resolved codec/inferred name. firmware/hardware come
       // straight off the device record: `main_sw_version` / `main_hw_version` — the same fields the v6

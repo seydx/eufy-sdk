@@ -539,6 +539,7 @@ export class Device {
         model: this.model,
         capabilities: new Set(this.capabilities),
         homeBaseAttached: this.stationSn !== this.sn,
+        stationSerial: this.stationSn,
       }),
     };
   }
