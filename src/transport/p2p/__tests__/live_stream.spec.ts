@@ -138,7 +138,7 @@ describe("LiveStream", () => {
     expect(audio[0].data.equals(payload)).toBe(true);
   });
 
-  it("carries the station's capture timestamps on video and audio, from one clock", () => {
+  it("carries the source timestamps on video and audio, from one clock", () => {
     const { session, live } = mk();
     const video: any[] = [];
     const audio: any[] = [];
@@ -150,8 +150,8 @@ describe("LiveStream", () => {
     session.push(p2pAudioFrame(0, Buffer.from([1, 2]), 0, 488_643_594) as any);
     session.push(p2pVideoFrame({ keyframe: false, nal: Buffer.from([0x41, 1]), timestamp: 488_643_606 }));
 
-    expect(video.map((f) => f.timestamp)).toEqual([488_643_540, 488_643_606]);
-    expect(audio.map((f) => f.timestamp)).toEqual([488_643_594]);
+    expect(video.map((f) => f.sourceTimestamp)).toEqual([488_643_540, 488_643_606]);
+    expect(audio.map((f) => f.sourceTimestamp)).toEqual([488_643_594]);
   });
 
   it("maps each codec id the app accepts, and re-reads it on every frame", () => {
@@ -296,6 +296,18 @@ describe("LiveStream access-unit reassembly", () => {
     expect(frames).toHaveLength(1);
     expect(frames[0].data.equals(Buffer.concat([filled, tail]))).toBe(true);
     expect(frames[0]).toMatchObject({ keyframe: true, width: 1920, height: 1080 });
+  });
+
+  it("preserves the header timestamp across split units and 32-bit wrap", () => {
+    const { session, frames } = mk();
+    const first = 0xfffffffe;
+    const second = 0xffffffff;
+    session.push(videoChunk(filled, { timestamp: first, sequence: 3 }));
+    session.push(videoChunk(tail, { timestamp: first, sequence: 3 }));
+    session.push(videoChunk(small, { timestamp: second, sequence: 4 }));
+    session.push(videoChunk(small, { timestamp: 0, sequence: 5 }));
+
+    expect(frames.map((frame) => frame.sourceTimestamp)).toEqual([first, second, 0]);
   });
 
   it("emits nothing while the unit's latest frame is still full", () => {

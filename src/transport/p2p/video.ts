@@ -172,6 +172,8 @@ export class VideoFrameDecoder {
 
 /** One whole access unit recovered from the frame (or frames) the station sent it in. */
 export interface AssembledAccessUnit {
+  /** Unsigned 32-bit header timestamp from the first frame of this access unit. */
+  sourceTimestamp: number;
   /** True when the unit's own header flagged it a keyframe — a point a consumer may begin decoding at. */
   keyframe: boolean;
   /** Frame width the unit's header declared. */
@@ -180,8 +182,6 @@ export interface AssembledAccessUnit {
   height: number;
   /** The complete payload, as long as the header said it would be. */
   data: Buffer;
-  /** Capture time the unit's header declared, in milliseconds on the station's clock. */
-  timestamp: number;
 }
 
 /**
@@ -297,5 +297,11 @@ function beginsAccessUnit(body: Buffer): boolean {
 
 /** The delivered shape of a unit: its header's flags and geometry, and the payload as assembled. */
 function unitOf(header: VideoFrameHeader, data: Buffer): AssembledAccessUnit {
-  return { keyframe: header.keyframe, width: header.width, height: header.height, data, timestamp: header.timestamp };
+  return {
+    sourceTimestamp: header.timestamp,
+    keyframe: header.keyframe,
+    width: header.width,
+    height: header.height,
+    data,
+  };
 }

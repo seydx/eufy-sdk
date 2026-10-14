@@ -279,6 +279,80 @@ describe("EufyMega auto-realtime", () => {
     expect(errors).toContain(boom); // failure surfaced, not thrown
   });
 
+  it("retries a failed push bring-up with backoff and installs the client that connects", async () => {
+    vi.useFakeTimers();
+    try {
+      const c = makeClient({ mqtt: 0 });
+      const client = { close: vi.fn() };
+      const transient = new TypeError("fetch failed");
+      c.push.mockRejectedValueOnce(transient).mockRejectedValueOnce(transient).mockResolvedValueOnce(client);
+      const errors: unknown[] = [];
+      c.eufy.on("error", (e) => errors.push(e));
+
+      await expect((c.eufy as any).ensureRealtime()).resolves.toMatchObject({ state: "partial" });
+      expect((c.eufy as any).pushClient).toBeUndefined();
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(c.push).toHaveBeenCalledTimes(2);
+      expect((c.eufy as any).pushClient).toBeUndefined();
+
+      await vi.advanceTimersByTimeAsync(59_999);
+      expect(c.push).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(c.push).toHaveBeenCalledTimes(3);
+      expect((c.eufy as any).pushClient).toBe(client);
+      expect(errors).toEqual([transient, transient]);
+
+      await vi.advanceTimersByTimeAsync(600_000);
+      expect(c.push).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("cancels an armed push retry on disconnect", async () => {
+    vi.useFakeTimers();
+    try {
+      const c = makeClient({ mqtt: 0 });
+      c.push.mockRejectedValue(new TypeError("fetch failed"));
+      c.eufy.on("error", () => {});
+
+      await (c.eufy as any).ensureRealtime();
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(c.push).toHaveBeenCalledTimes(2);
+
+      await c.eufy.disconnect();
+      await vi.advanceTimersByTimeAsync(600_000);
+      expect(c.push).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retries push when loading devices fails before push was started", async () => {
+    vi.useFakeTimers();
+    try {
+      const c = makeClient({ mqtt: 0 });
+      const client = { close: vi.fn() };
+      const transient = new TypeError("fetch failed");
+      (c.eufy as any).registry.list.mockReturnValue([]);
+      c.getDevices.mockRejectedValueOnce(transient);
+      c.push.mockResolvedValueOnce(client);
+      const errors: unknown[] = [];
+      c.eufy.on("error", (e) => errors.push(e));
+
+      await expect((c.eufy as any).ensureRealtime()).resolves.toMatchObject({ state: "partial" });
+      expect(c.push).not.toHaveBeenCalled();
+      expect(errors).toEqual([transient]);
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(c.push).toHaveBeenCalledOnce();
+      expect((c.eufy as any).pushClient).toBe(client);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("reports count-only partial readiness across all selected planes", async () => {
     const c = makeClient({ mqtt: 0 });
     const life = { sn: "life", category: "eufy_life" } as unknown as EufyDevice;

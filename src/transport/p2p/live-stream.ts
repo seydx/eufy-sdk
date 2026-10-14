@@ -28,7 +28,7 @@ const VIDEO_HEADER_LEN = 0x16; // 22-byte CMD_VIDEO_FRAME header before the Anne
 const AUDIO_HEADER_LEN = 0x10; // 16-byte CMD_AUDIO_FRAME header before the audio payload
 /** Byte offset of the codec id between the frame-size and frame-number fields. */
 const AUDIO_TYPE_OFFSET = 0x05;
-/** Byte offset of the capture timestamp (u32 LE, milliseconds on the station clock) in the audio frame header. */
+/** Byte offset of the source timestamp (u32 LE, the video header's clock) in the audio frame header. */
 const AUDIO_TIMESTAMP_OFFSET = 0x08;
 const SC4 = Buffer.from([0, 0, 0, 1]);
 const SC3 = Buffer.from([0, 0, 1]);
@@ -343,12 +343,12 @@ export class LiveStream extends EventEmitter {
           if (unit.keyframe) this.lastCodec = sniffAnnexbCodec(unit.data) ?? this.lastCodec;
           this.settleKeepalive();
           this.emit("video", {
+            sourceTimestamp: unit.sourceTimestamp,
             keyframe: unit.keyframe,
             width: unit.width,
             height: unit.height,
             codec: this.lastCodec,
             data: unit.data,
-            timestamp: unit.timestamp,
           });
         }
       } else if (f.commandId === CMD_AUDIO_FRAME) {
@@ -359,13 +359,13 @@ export class LiveStream extends EventEmitter {
           if (!codec) {
             this.logger.debug(`[live] dropping audio frame: unknown codec id ${codecId ?? "missing"}`);
           } else {
-            const timestamp =
+            const sourceTimestamp =
               f.data.length >= AUDIO_TIMESTAMP_OFFSET + 4 ? f.data.readUInt32LE(AUDIO_TIMESTAMP_OFFSET) : undefined;
             this.emit(
               "audio",
               codec === "aac-eld"
-                ? { codec, data: audio, config: AAC_ELD_AUDIO_SPECIFIC_CONFIG, timestamp }
-                : { codec, data: audio, timestamp },
+                ? { codec, data: audio, config: AAC_ELD_AUDIO_SPECIFIC_CONFIG, sourceTimestamp }
+                : { codec, data: audio, sourceTimestamp },
             );
           }
         }

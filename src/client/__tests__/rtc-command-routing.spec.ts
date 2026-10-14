@@ -20,9 +20,10 @@ function fixture(stationType: number = DeviceType.STATION_9000) {
   });
   const internals = client as unknown as {
     registry: { list(): EufyDevice[]; devices: EufyDevice[] };
-    rtc: { dispatchCommand(route: RtcRoute, cmd: Command): Promise<void> };
+    rtc: { dispatchCommand(route: RtcRoute, cmd: Command): Promise<void>; mediaProviderFor(route: unknown): unknown };
     p2p: { dispatchCommand(sn: string, cmd: Command): Promise<void> };
     routeCommand(sn: string, cmd: Command): Promise<void>;
+    rtcMediaFor(sn: string): unknown;
   };
   const devices = [
     { sn: HUB, model: "T9000", raw: { device_type: stationType, member: { admin_user_id: "synthetic-admin" } } },
@@ -147,5 +148,51 @@ describe("station-owned RTC command routing", () => {
     await expect(internals.routeCommand(CAMERA, command)).rejects.toThrow("unambiguous attached-device channel");
     expect(rtc).not.toHaveBeenCalled();
     expect(p2p).not.toHaveBeenCalled();
+  });
+
+  it("serves an attached camera's media over RTC on its resolved channel, and no other device's", () => {
+    const { internals } = fixture();
+    const media = vi.spyOn(internals.rtc, "mediaProviderFor").mockReturnValue({ live: vi.fn() });
+    expect(internals.rtcMediaFor(CAMERA)).toBeDefined();
+    expect(media).toHaveBeenCalledExactlyOnceWith({
+      stationSn: HUB,
+      adminUserId: "synthetic-admin",
+      attached: true,
+      cameraSn: CAMERA,
+      channel: 3,
+    });
+    expect(internals.rtcMediaFor(HUB)).toBeUndefined();
+    const other = fixture(DeviceType.HB3);
+    expect(other.internals.rtcMediaFor(CAMERA)).toBeUndefined();
+  });
+
+  it("serves no RTC media for a camera attached to a T8N00, whose route carries commands only", () => {
+    const { internals, devices } = fixture();
+    devices[0]!.model = "T8N00";
+    devices[0]!.raw = { member: { admin_user_id: "synthetic-admin" } };
+    const media = vi.spyOn(internals.rtc, "mediaProviderFor").mockReturnValue({ live: vi.fn() });
+    expect(internals.rtcMediaFor(CAMERA)).toBeUndefined();
+    expect(media).not.toHaveBeenCalled();
+  });
+});
+
+describe("command context of a device behind a station", () => {
+  /** The context a capability gets, from the record the command sink already holds. */
+  const contextOf = (internals: unknown, sn: string, model: string) =>
+    (
+      internals as {
+        commandContext(sn: string, known: unknown): Promise<{ stationDeviceType?: number }>;
+      }
+    ).commandContext(sn, { sn, model, params: {} });
+
+  it("names the cloud device_type of the station a camera hangs off, and none for the station itself", async () => {
+    const t9000 = fixture();
+    expect((await contextOf(t9000.internals, CAMERA, "T8425")).stationDeviceType).toBe(DeviceType.STATION_9000);
+    expect((await contextOf(t9000.internals, HUB, "T9000")).stationDeviceType).toBeUndefined();
+    const linkedOnly = fixture();
+    linkedOnly.devices[1]!.raw = { device_channel: 3 };
+    expect((await contextOf(linkedOnly.internals, CAMERA, "T8425")).stationDeviceType).toBe(DeviceType.STATION_9000);
+    const hb3 = fixture(DeviceType.HB3);
+    expect((await contextOf(hb3.internals, CAMERA, "T8425")).stationDeviceType).toBe(DeviceType.HB3);
   });
 });

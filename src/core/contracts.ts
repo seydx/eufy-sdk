@@ -536,17 +536,10 @@ export type VideoCodec = "h264" | "h265" | "av1";
  * headers promise decodes to no picture at all.
  */
 export interface LiveVideoFrame {
+  /** Source-reported unsigned 32-bit timestamp; unit and clock origin are unspecified. */
+  sourceTimestamp?: number;
   /** True on an IDR — a unit a consumer may begin decoding at, never a continuation of an earlier one. */
   keyframe: boolean;
-  /**
-   * When the station captured this unit, in milliseconds on the station's own clock, as its frame header
-   * states it. Absent where a producer has no header to read it from.
-   *
-   * Arrival time is no substitute: the transport delivers media in bursts. Measured on an own-session camera
-   * over 49 s, the station's stamps advanced 62–73 ms per unit at 15 fps while arrival lagged them by anywhere
-   * from 0 to 3.8 s. The clock is the one {@link LiveAudioFrame.timestamp} reads, so the two tracks share it.
-   */
-  timestamp?: number;
   /**
    * Frame geometry as the station's own frame header states it — {@link height} is the same field.
    *
@@ -638,13 +631,13 @@ export type LiveAudioFrame = (
     }
 ) & {
   /**
-   * When the station captured this unit, in milliseconds on the same station clock as
-   * {@link LiveVideoFrame.timestamp}, as its frame header states it. Absent where a producer has no header.
+   * Source-reported unsigned 32-bit timestamp from the audio frame header, on the same clock as
+   * {@link LiveVideoFrame.sourceTimestamp}. Absent where a producer has no header to read it from.
    *
    * The station stamps audio coarser than it samples it: measured on an own-session camera, consecutive
    * AAC units carried stamps 40, 70 or 100 ms apart while each held a fixed number of samples.
    */
-  timestamp?: number;
+  sourceTimestamp?: number;
 };
 
 /**

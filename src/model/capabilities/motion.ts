@@ -567,6 +567,10 @@ export const MOTION_MEMBERS = {
    * The raw sensitivity an indoor camera reports, on the one id whose write takes a `1700` control
    * payload carrying an index rather than the `1350` envelope its siblings use — a frame-shape
    * difference `sensitivityCommand` resolves from the scale. `unexposed` like its three siblings.
+   *
+   * Some devices report 6041 as a base64 JSON list of per-sensor entries
+   * (`{"list":[{"sensor_id":…,"sensitivity":…}]}`) rather than a scalar. That value is stored verbatim
+   * and this getter answers `undefined` for it: only the scalar form is confirmed to be this step.
    */
   indoorSensitivity: {
     param: MOTION_CMD.INDOOR_SENSITIVITY_INDEX,
@@ -575,6 +579,7 @@ export const MOTION_MEMBERS = {
     provenance: "verified",
     unexposed: true,
     description: "Raw sensitivity an indoor camera reports (verified: param 6041).",
+    decode: (raw) => (typeof raw === "number" ? raw : undefined),
   },
   /**
    * The raw sensitivity on the INVERTED seven-step camera scale — a HIGHER number is LESS sensitive, so

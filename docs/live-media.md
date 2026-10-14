@@ -72,11 +72,13 @@ stream.on("video", (frame) => {
   // frame.width, frame.height  what the station's frame header reported (see below — these change
   //                            within a session; `video-config` is the authority)
   // frame.keyframe  true on an IDR (a valid resync/segment boundary)
+  // frame.sourceTimestamp  optional source-reported u32 timestamp; unit/clock origin unspecified
 });
 stream.on("audio", (frame) => {
   // frame.codec   "aac-lc" | "aac-eld" | "g711a"
   // frame.data    one ADTS frame (aac-lc), one raw access unit (aac-eld), raw A-law samples (g711a)
   // frame.config  the AudioSpecificConfig that decodes frame.data — present for aac-eld only
+  // frame.sourceTimestamp  optional source-reported u32 timestamp, on the video frames' clock
   consumeAudio(frame.codec, frame.data);
 });
 stream.on("video-config", (config) => {
@@ -92,6 +94,17 @@ stream.stop(); // detach this consumer
 
 `stream.stop()` detaches **this** consumer only. The shared pull stops when the _last_ consumer
 detaches (after the linger window).
+
+### Source timing and delivery timing
+
+P2P video events preserve the source header's unsigned 32-bit `sourceTimestamp`.
+Object-mode `openReadable({ objectMode: true })` preserves the same frame metadata;
+byte-mode `openReadable()` returns only video bytes.
+
+The field carries the source value unchanged. Its unit, clock origin and relation to
+capture/presentation time are unspecified; it is not an absolute timestamp or a
+cross-camera synchronization clock. The unsigned 32-bit value can wrap, and its
+clock can reset when the source session changes.
 
 ### The source reconfigures mid-session
 

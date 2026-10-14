@@ -11,6 +11,7 @@ import type { MotionActions } from "../motion.js";
 import type { CommandContext } from "../types.js";
 import type { Command } from "../../../core/contracts.js";
 import { buildActions, buildCommand } from "../index.js";
+import { Device } from "../../device.js";
 
 /**
  * Bind the way a device does: a member's setter is derived in the barrel, not returned by `actions()`.
@@ -412,5 +413,41 @@ describe("motion — sensitivity scales resolved from reported state", () => {
     const d = bind([1276], { motionSensitivity: "3" });
     await expect(d.actions.setSensitivityStep(6)).rejects.toThrow(/1\.\.5/);
     expect(d.sent).toEqual([]);
+  });
+});
+
+/**
+ * 6041 arrives as a scalar on some devices and as a base64 JSON per-sensor list on others. The list is
+ * stored as reported and is not a misdeclared number. The payload below is synthetic.
+ */
+describe("motion — indoor sensitivity reported as a per-sensor list", () => {
+  const spec = MOTION.properties.find((p) => p.name === "indoorSensitivity")!;
+  const device = () => {
+    const warn = vi.fn();
+    const logger = { debug: vi.fn(), info: vi.fn(), warn, error: vi.fn() };
+    const dev = new Device(
+      "T8000P0000000000",
+      { codec: "camera", capabilities: ["motion"], properties: [spec], name: "cam", source: "model" },
+      logger,
+    );
+    return { dev, warn };
+  };
+
+  it("stores the list verbatim without warning", () => {
+    const { dev, warn } = device();
+    const list = Buffer.from(JSON.stringify({ list: [{ sensor_id: 0, sensitivity: 3 }] })).toString("base64");
+
+    dev.applyParams({ 6041: list });
+
+    expect(dev.getProperty("indoorSensitivity")?.value).toBe(list);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("still stores the scalar form as a number", () => {
+    const { dev } = device();
+
+    dev.applyParams({ 6041: "2" });
+
+    expect(dev.getProperty("indoorSensitivity")?.value).toBe(2);
   });
 });

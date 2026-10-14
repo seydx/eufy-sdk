@@ -995,3 +995,20 @@ export class SharedLiveSource {
     if (held) this.opts.onIdle?.();
   }
 }
+
+/**
+ * Attach a consumer, unless the caller has already abandoned the call.
+ *
+ * The acquisition it just waited through can outlast the caller's interest, and a consumer attached for
+ * somebody who has gone keeps the pull warm for nobody. Detaching immediately gives the pull back, which
+ * lets it linger and fall away if this was the only thing holding it, and leaves it untouched if it was
+ * not.
+ */
+export function attachUnlessAborted(source: SharedLiveSource, signal?: AbortSignal): Consumer {
+  const consumer = source.attach();
+  if (signal?.aborted) {
+    consumer.detach();
+    signal.throwIfAborted();
+  }
+  return consumer;
+}
