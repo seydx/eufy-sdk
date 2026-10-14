@@ -6,10 +6,15 @@ import { SessionExpiredError, type MegaHttpClient } from "../../transport/http/m
  * `getDeviceParamList`). `post` is routed by path so one fake serves house-list + devs-list.
  */
 type PostFn = (service: string, path: string, body?: unknown) => Promise<any>;
-function fakeMega(opts: { post: PostFn; getDeviceParamList?: (sn: string) => Promise<any> }): MegaHttpClient {
+function fakeMega(opts: {
+  post: PostFn;
+  getDeviceParamList?: (sn: string) => Promise<any>;
+  getDeviceRelationList?: () => Promise<any>;
+}): MegaHttpClient {
   return {
     post: (service: string, path: string, body?: unknown) => opts.post(service, path, body),
     getDeviceParamList: (sn: string) => (opts.getDeviceParamList ?? (async () => ({})))(sn),
+    getDeviceRelationList: () => (opts.getDeviceRelationList ?? (async () => Promise.reject(new Error("not faked"))))(),
   } as unknown as MegaHttpClient;
 }
 
@@ -574,5 +579,107 @@ describe("deviceClass — derived from the codec", () => {
 
     expect(await applianceClass(100)).toBe("other"); // inside the security id range, but not a security device
     expect(await applianceClass(99999)).toBe("other"); // outside it, hits the blanket fallback
+  });
+
+  describe("getDevices — the user's name for a unit", () => {
+    const vacuum = (extra: Record<string, unknown>) =>
+      rawDevice("V", {
+        device_model: "T2351",
+        category: "eufy_home",
+        p2p_did: undefined,
+        device_type: undefined,
+        params: [],
+        ...extra,
+      });
+    async function nameOf(record: Record<string, unknown>): Promise<string | undefined> {
+      const mega = fakeMega({
+        post: async (_s, path) => (path.endsWith("get_house_list") ? { house_infos: [] } : { devices: [record] }),
+      });
+      const [dev] = await new DeviceRegistry({ mega, onError: () => {} }).getDevices();
+      return dev?.name;
+    }
+
+    it("reads a robot vacuum's alias_name before the product label in device_name", async () => {
+      expect(await nameOf(vacuum({ device_name: "RoboVac", alias_name: "Kitchen" }))).toBe("Kitchen");
+    });
+  });
+});
+
+describe("DeviceRegistry — a robot's cloud data points", () => {
+  /** A devs-list robot: AIoT clean line, carrying only one of its data points. */
+  const robot = (sn: string) =>
+    rawDevice(sn, {
+      device_model: "T2351",
+      category: "eufy_home",
+      device_type: undefined,
+      p2p_did: undefined,
+      params: [{ param_type: 153, param_value: "from-devs-list" }],
+    });
+  const houses =
+    (houseIds: string[]) =>
+    async (_s: string, path: string): Promise<unknown> =>
+      path.endsWith("get_house_list")
+        ? { house_infos: houseIds.map((house_id) => ({ house_id })) }
+        : { devices: [robot("R1")] };
+  const relation = (dps: Record<string, unknown>) => ({ devices: [{ device: { device_sn: "R1", dps } }] });
+
+  it("joins the data points the device list lacks beneath its params, keeping the ones it has", async () => {
+    const mega = fakeMega({
+      post: houses([]),
+      getDeviceRelationList: async () =>
+        relation({ "153": "from-relation", "180": "c2NlbmVz", "151": true, "999": { nested: 1 } }),
+    });
+    const reg = new DeviceRegistry({ mega, onError: () => {} });
+
+    await reg.getDevices();
+    const rec = await reg.record("R1");
+
+    expect(rec.params).toEqual({ 153: "from-devs-list", 180: "c2NlbmVz", 151: "1" });
+    expect(rec.paramUpdatedAt?.[180]).toBeUndefined();
+    expect(reg.hasRealtimeState("R1")).toBe(false);
+  });
+
+  it("asks once for the account-wide list, however many houses the account has", async () => {
+    let asked = 0;
+    const mega = fakeMega({
+      post: houses(["H1", "H2"]),
+      getDeviceRelationList: async () => (asked++, { devices: [] }),
+    });
+
+    await new DeviceRegistry({ mega, onError: () => {} }).getDevices();
+
+    expect(asked).toBe(1);
+  });
+
+  /**
+   * The cloud value lags the robot: a later poll that sees the relation list move must not treat that as
+   * the cloud superseding the robot's own report, which a poll diff on the id would do.
+   */
+  it("keeps a realtime report over a later poll, and reports nothing for that id", async () => {
+    let scenes = "c2NlbmVzLTE=";
+    const mega = fakeMega({
+      post: houses([]),
+      getDeviceRelationList: async () => relation({ "180": scenes }),
+    });
+    const reg = new DeviceRegistry({ mega, onError: () => {} });
+    await reg.pollChanges();
+
+    reg.applyRealtimeParams("R1", { 180: "bGl2ZQ==" });
+    scenes = "c2NlbmVzLTI=";
+    const diff = await reg.pollChanges();
+
+    expect(diff.params.filter((p) => p.paramType === 180)).toEqual([]);
+    expect((await reg.record("R1")).dpParams?.[180]).toBe("bGl2ZQ==");
+  });
+
+  it("lets a dead session through rather than serving the device list as current", async () => {
+    const mega = fakeMega({
+      post: houses([]),
+      getDeviceRelationList: async () => Promise.reject(new SessionExpiredError("expired")),
+    });
+
+    await expect(new DeviceRegistry({ mega, onError: () => {} }).getDevices()).rejects.toBeInstanceOf(
+      SessionExpiredError,
+    );
   });
 });

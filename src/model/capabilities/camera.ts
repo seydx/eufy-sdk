@@ -15,6 +15,8 @@ import { CameraDisabledError, type Command, type MediaProvider } from "../../cor
  * `transport/p2p/commands.ts`). Each entry notes its app `CommandType` name.
  */
 export const CAMERA_CMD = {
+  /** Camera-reported Wi-Fi signal (app `CMD_GET_WIFI_RSSI`). */
+  WIFI_RSSI: 1142,
   /** Camera on/off. Read and write polarity depend on the family and topology. */
   CAMERA_ENABLE: 1035,
   /** Wrapped T8410 power switch on HomeBase 3. */
@@ -519,6 +521,14 @@ function refuseWhenDisabled(ctx: CommandContext, read: (name: string) => { value
  * @internal
  */
 export const CAMERA_MEMBERS = {
+  /** Reads the latest cached report and exposes no setter. */
+  wifiRssi: {
+    param: CAMERA_CMD.WIFI_RSSI,
+    type: "number",
+    kind: "scalar",
+    provenance: "apk",
+    description: "Camera-reported Wi-Fi signal; physical units and a quality scale are unspecified.",
+  },
   /**
    * The default READ is the *disable*-bit convention (1035 "0" ⇒ ON, 2001 direct); the WRITE polarity is
    * family-dependent — see `powerValue` / `isEnableBitPolarity`. Battery/solo cams report the state under
@@ -702,16 +712,14 @@ export const CAMERA_MEMBERS = {
    * Live-view quality, the pair to {@link CAMERA_MEMBERS.recordingQuality} and a different setting on a
    * different wire: changing one leaves the other's parameter untouched.
    *
-   * The READ is 1020, which reports the resolved tier as a plain integer. 1020 is also the name the
-   * param dictionary already gives that id, and `Device` keys state by NAME — a member claiming 2730
-   * under this name would collide with it on a device reporting both.
+   * The READ is 1020, which reports the resolved tier as a plain integer, while the WRITE rides 2730's
+   * `1350` payload. They are two ids for one setting because 2730 carries a per-mode config and 1020
+   * carries the tier in force; the tier is what this property means. 1020 is also the name the param
+   * dictionary already gives that id, and `Device` keys state by NAME — a member claiming 2730 under
+   * this name would collide with it on a device reporting both.
    *
-   * `unverified: true` with no `write`: the app's 2730 frame is captured byte-exact, but replaying it
-   * from this SDK produced no observable change on a standalone T8171, where the recording sibling's
-   * 2731 write on the same envelope and the same session does land. The one difference the capture
-   * shows is that the app's frame carries no `mChannel`/`mValue3`, which this envelope always emits.
-   * Until a send is confirmed, the setter is absent — a control that silently does nothing is worse
-   * than none — and the read ships ahead of it, which verification per direction allows.
+   * `transaction` is part of the frame that was captured, so it is sent. The recording sibling's own
+   * confirmed frame carries no such field; neither is inferred from the other.
    */
   streamingQuality: {
     param: 1020,
@@ -719,12 +727,28 @@ export const CAMERA_MEMBERS = {
     kind: "enum",
     enumValues: STREAMING_QUALITY_TIERS,
     provenance: "verified",
-    unverified: true,
+    args: [{ name: "quality", kind: "enum", description: "A tier, or the name it maps to. 0 is Auto." }],
+    ...accepts<StreamingQualityName>(),
     description:
-      "Live-view quality as a tier, 0 = Auto (1020). Distinct from recordingQuality, which is what gets " +
-      "stored. All four tiers confirmed on a T8170 and a T8171. The WRITE (2730) is unconfirmed from " +
-      "this SDK, so no setter is offered rather than one that reports success without acting — see " +
-      "CAMERA_CMD.STREAMING_QUALITY_SET.",
+      "Live-view quality as a tier, 0 = Auto (1020; the write rides 2730 " +
+      "APP_CMD_MULTI_CAM_SET_VIDEO_QUALITY). Distinct from recordingQuality, which is what gets stored. " +
+      "All four tiers wire-verified live on a T8170 and read back on 1020. Sent from this SDK to a " +
+      "standalone T8170 and T8171, tier 1 holds the live stream at 1280x720 and tier 0 restores the " +
+      "camera's own resolution ladder — see CAMERA_CMD.STREAMING_QUALITY_SET. A value outside the tier set is REJECTED, not " +
+      "clamped: every tier in range is a real quality, so a bad one would silently pick another.",
+    write: (v, ctx) => {
+      const q = resolveStreamingQualityTier(v);
+      return q == null
+        ? undefined
+        : setPayload(
+            CAMERA_CMD.STREAMING_QUALITY_SET,
+            { channel: 0, mode: 0, primary_view: 0, quality: q, transaction: String(Date.now()) },
+            ctx,
+            0,
+            undefined,
+            "auto",
+          );
+    },
   },
   /**
    * `type` is how the value is STORED, and 2731 stores the whole config — the ACTIVE tier is lifted out

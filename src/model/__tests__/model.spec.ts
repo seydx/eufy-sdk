@@ -51,6 +51,16 @@ describe("classify (device_type → codec)", () => {
     expect(classify({})).toBe("camera"); // safe read-only default
   });
 
+  it.each([undefined, DeviceType.CAMERA_POE_S4])(
+    "provides the PoE S4 camera surface for device type %s",
+    (deviceType) => {
+      const record = { model: "T8E00", deviceType, params: {} };
+      const codec = classify(record);
+      expect(codec).toBe("camera");
+      expect(detectCapabilities(record, codec)).toContain("camera");
+    },
+  );
+
   it("maps the eufy_life T8L0x light line to light — by prefix, incl. suffixed variants", () => {
     expect(classify({ model: "T8L02" })).toBe("light"); // registry-listed
     expect(classify({ model: "T8L02X" })).toBe("light"); // suffixed variant, no registry row
@@ -266,6 +276,15 @@ describe("doorbell — confirmed against real T8214", () => {
     // Mains-powered: the row must not hand it a battery it does not have.
     expect(r.capabilities).not.toContain("battery");
     expect(r.name).toBe("Wired Doorbell 2K");
+  });
+
+  it("types the battery T8213 as a doorbell", () => {
+    // Without its registry row the raw T-code missed the doorbell model hint, so a T8213's presses
+    // arrived but the host built no doorbell event or ring trigger (ha-eufy-sdk#38).
+    const r = resolveDevice({ model: "T8213", deviceType: 91 });
+    expect(r.capabilities).toContain("doorbell");
+    expect(r.capabilities).toContain("battery");
+    expect(r.name).toBe("Video Doorbell Dual");
   });
 
   it("decodes real doorbell param values (chime on, ringtone vol 80, notification JSON)", () => {

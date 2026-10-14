@@ -164,6 +164,14 @@ describe("describeCapabilities — enumeration of the live bound objects", () =>
     });
   });
 
+  it("describes a reported camera Wi-Fi signal as a read-only scalar without inferred units", () => {
+    const camera = describeAll(new Set([1142])).find((d) => d.capability === "camera")!;
+    const signal = camera.reads.find((r) => r.accessor === "wifiRssi");
+    expect(signal).toMatchObject({ property: "wifiRssi", type: "number", kind: "scalar", writable: false });
+    expect(signal?.unit).toBeUndefined();
+    expect(describeAll(new Set()).find((d) => d.capability === "camera")!.reads).not.toContainEqual(signal);
+  });
+
   it("names the accessor each capability is reached under", () => {
     for (const d of describeAll(allParams())) expect(d.accessor).toBe(camelCase(d.capability));
   });

@@ -34,6 +34,15 @@ const SC4 = Buffer.from([0, 0, 0, 1]);
 const SC3 = Buffer.from([0, 0, 1]);
 
 /**
+ * AudioSpecificConfig (ISO/IEC 14496-3) of a station's `aac-eld` audio, which the station does not send: an
+ * `aac-eld` frame carries one raw access unit after its 16-byte header, with no transport framing.
+ *
+ * Fields: audio object type 39 (ER AAC-ELD), 16 kHz, mono, 480-sample frames, no LD-SBR. These are the bytes the
+ * v6 app's native AAC decoder (`AudioFDKDecode`) configures libfdk with for raw ELD access units.
+ */
+const AAC_ELD_AUDIO_SPECIFIC_CONFIG = Buffer.from("f8f03000", "hex");
+
+/**
  * Codec ids the station puts at {@link AUDIO_TYPE_OFFSET}, as the v6 app maps them
  * (`AudioReader.AAC_LC = 0`, `G711A = 2`, `AAC_ELD = 7`).
  *
@@ -133,6 +142,12 @@ export class LiveStream extends EventEmitter {
   private lastCodec: VideoCodec = "h264";
   /** Rebuilds an access unit the station split across several frames — see {@link AccessUnitAssembler}. */
   private readonly units = new AccessUnitAssembler((drop) => this.reportDroppedUnit(drop));
+  /** Whether a missing video datagram or incomplete unit invalidated the current reference chain. */
+  private awaitingKeyframeAfterGap = false;
+  private readonly videoGapHandler = () => {
+    this.units.discard();
+    this.awaitingKeyframeAfterGap = true;
+  };
   /** The channel inbound media must be tagged with, once {@link acceptsMedia} trusts the station's tag. */
   private mediaChannel?: number;
   private tracedFirstVideoCommand = false;
@@ -175,6 +190,7 @@ export class LiveStream extends EventEmitter {
     if (this.listening) return this;
     this.listening = true;
     this.session.on("data", this.handler);
+    this.session.on("videoGap", this.videoGapHandler);
     this.session.on("liveStartUnacknowledged", this.unackedHandler);
     this.sendStart();
     const keepAliveMs = this.opts.keepAliveMs ?? DEFAULT_KEEPALIVE_MS;
@@ -273,6 +289,8 @@ export class LiveStream extends EventEmitter {
     if (!this.listening) return;
     this.listening = false;
     this.session.off("data", this.handler);
+    this.session.off("videoGap", this.videoGapHandler);
+    this.awaitingKeyframeAfterGap = false;
     this.session.off("liveStartUnacknowledged", this.unackedHandler);
     if (this.kaTimer) clearInterval(this.kaTimer);
     this.kaTimer = undefined;
@@ -308,6 +326,10 @@ export class LiveStream extends EventEmitter {
     try {
       if (f.commandId === CMD_VIDEO_FRAME) {
         for (const unit of this.units.push(f.data, (payload) => this.annexbOf(payload, f.signCode))) {
+          if (this.awaitingKeyframeAfterGap) {
+            if (!unit.keyframe) continue;
+            this.awaitingKeyframeAfterGap = false;
+          }
           if (!this.tracedFirstVideoUnit) {
             this.tracedFirstVideoUnit = true;
             this.trace({ phase: "first-video-unit", keyframe: unit.keyframe });
@@ -339,7 +361,12 @@ export class LiveStream extends EventEmitter {
           } else {
             const timestamp =
               f.data.length >= AUDIO_TIMESTAMP_OFFSET + 4 ? f.data.readUInt32LE(AUDIO_TIMESTAMP_OFFSET) : undefined;
-            this.emit("audio", { codec, data: audio, timestamp });
+            this.emit(
+              "audio",
+              codec === "aac-eld"
+                ? { codec, data: audio, config: AAC_ELD_AUDIO_SPECIFIC_CONFIG, timestamp }
+                : { codec, data: audio, timestamp },
+            );
           }
         }
       }
@@ -407,6 +434,7 @@ export class LiveStream extends EventEmitter {
    * otherwise silent in both directions: no frame reaches a consumer, and nothing states why.
    */
   private reportDroppedUnit(drop: { carried: number; chunks: number; count: number }): void {
+    this.awaitingKeyframeAfterGap = true;
     const message = `[live] dropped an incomplete access unit (${drop.carried} bytes in ${drop.chunks} frame(s), tail never arrived, ${drop.count} so far)`;
     if (drop.count === 1) this.logger.warn(message);
     else this.logger.debug(message);

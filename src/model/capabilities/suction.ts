@@ -20,7 +20,7 @@ export const SUCTION_DP = {
  * Suction levels — the app's `SuctionEnum` (`getSuctionEnumByValue`). This is a **fixed** value→label
  * map with **no model argument**: a given int means the same thing on every RoboVac. What varies per
  * model is only **availability** — a device's `get_product_data_point` range may expose a narrower
- * subset (the T2351 catalog lists 0-3) — so the `suction` property stays a raw int rather than being
+ * subset (the T2351 catalog lists `Quiet`–`Max`) — so the `suction` property stays a raw int rather than being
  * constrained per device, and {@link suctionLevelName} names a reported level.
  *
  * `BoostIQ` (4) is a real suction level in this scale. The separate `boostIq`
@@ -44,6 +44,15 @@ const SUCTION_LABEL: Record<number, string> = enumLabels(SuctionLevel);
 const ALL_SUCTION_LEVELS: readonly SuctionLevelValue[] = [0, 1, 2, 3, 4, 5];
 
 /**
+ * The {@link SuctionLevel} a catalog range member stands for: a level name (`"Quiet"`) or its numeric
+ * string (`"0"`). `undefined` for a member outside the known scale.
+ */
+function levelFromCatalog(member: string): SuctionLevelValue | undefined {
+  if (Object.hasOwn(SuctionLevel, member)) return SuctionLevel[member as keyof typeof SuctionLevel];
+  return Object.hasOwn(SUCTION_LABEL, member) ? (Number(member) as SuctionLevelValue) : undefined;
+}
+
+/**
  * The label for a raw suction int, per the app's `SuctionEnum`, or `undefined` for a value outside the
  * known scale. The mapping is global (not per-model) — see {@link SuctionLevel}.
  */
@@ -60,11 +69,11 @@ export function suctionLevelName(value: number): string | undefined {
 export type SuctionActions = Surface<typeof SUCTION_MEMBERS> & {
   /**
    * The suction levels this device supports, sourced from the per-SKU `get_product_data_point` catalog
-   * range for DP 158. Narrower than the full six {@link SuctionLevel} values on many models — a T2351
-   * reports `[0, 1, 2, 3]`.
+   * range for DP 158. Narrower than the full six {@link SuctionLevel} values on many models — a T2351's
+   * catalog lists `Quiet`, `Standard`, `Turbo` and `Max`, which answers `[0, 1, 2, 3]`.
    *
-   * `undefined` when the catalog is absent or does not cover DP 158. Only meaningful on devices where
-   * `setSuctionLevel` is installed (AIoT vacuums).
+   * `undefined` when the catalog is absent, does not cover DP 158, or lists only members outside the
+   * known scale. Only meaningful on devices where `setSuctionLevel` is installed (AIoT vacuums).
    */
   readonly supportedLevels?: readonly SuctionLevelValue[];
 };
@@ -141,13 +150,15 @@ export const SUCTION: CapabilityModule = {
   },
   /**
    * The per-model level range — sourced from the SKU's `get_product_data_point` catalog for DP 158
-   * when available. `undefined` when no catalog entry exists for DP 158. `setSuctionLevel` is only
+   * when available. `undefined` when no catalog entry exists for DP 158, or when no listed member maps
+   * to a known level (so a caller never reads `[]` as "nothing selectable"). `setSuctionLevel` is only
    * installed on AIoT devices (gated by `available: isAiotVacuum` on the `level` entry), so
    * `supportedLevels` is harmless data on a non-AIoT device.
    */
   actions({ ctx }: MemberDeps): CapabilityActions {
     const catalogRange = ctx.dpCatalog?.enumRanges.get(SUCTION_DP.SUCTION);
-    const supportedLevels = catalogRange?.filter((v): v is SuctionLevelValue => v in SUCTION_LABEL);
+    const levels = catalogRange?.flatMap((m) => levelFromCatalog(m) ?? []);
+    const supportedLevels = levels?.length ? levels : undefined;
     return { supportedLevels } as unknown as CapabilityActions;
   },
 };

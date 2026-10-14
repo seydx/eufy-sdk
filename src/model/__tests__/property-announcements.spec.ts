@@ -30,6 +30,11 @@ const camera: CloudRecord = { deviceType: 9, model: "T8114", params: { 1101: "50
 const announce = (dev: Device, params: Record<number, string>) => dev.announcements(dev.applyParams(params));
 
 describe("Device.announcements", () => {
+  it("announces a changed camera Wi-Fi signal through the existing numeric read", () => {
+    const dev = Device.fromRecord("sn", { ...camera, params: { 1142: "-62" } });
+    expect(announce(dev, { 1142: "-55" })).toEqual([{ property: "wifiRssi", value: -55 }]);
+  });
+
   it("names a changed schema property and the value its getter now answers", () => {
     const dev = Device.fromRecord("sn", camera);
 

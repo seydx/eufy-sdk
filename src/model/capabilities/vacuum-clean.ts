@@ -233,12 +233,11 @@ const MODE_CTRL_FIELD = {
 } as const;
 
 /**
- * `ModeCtrlRequest.method` values for DP 152. Live-verified on T2351: START_AUTO_CLEAN → 0
- * (omitted from the wire when zero), START_GOHOME → 6, PAUSE_TASK → 13.
+ * `ModeCtrlRequest.method` values for DP 152. Live-verified on T2351: START_GOHOME → 6,
+ * PAUSE_TASK → 13. An auto clean is `START_AUTO_CLEAN` (0) with a payload — see
+ * {@link ModeCtrlParamMethod}.
  */
 export const ModeCtrlMethod = {
-  /** Live-verified on a T2351. Zero, so it is omitted from the wire per the proto3 default rule. */
-  START_AUTO_CLEAN: 0,
   /** Live-verified on a T2351. */
   START_GOHOME: 6,
   /** Live-verified on a T2351. */
@@ -273,9 +272,11 @@ export const ModeCtrlMethod = {
  * its argument in the signature: {@link VACUUM_CLEAN_MEMBERS.startScene},
  * {@link VACUUM_CLEAN_MEMBERS.cleanRooms} and {@link VACUUM_CLEAN_MEMBERS.cleanZones}.
  *
- * The outer frame these ride in is byte-verified on a live T2351, and `SCENE`, `SELECT_ROOMS` and
- * `SELECT_ZONES` have each since been RUN on a T2351 and did what they name — so their numbers rest on
- * observed behaviour rather than on the vendor's definition alone.
+ * The outer frame these ride in is byte-verified on a live T2351, and `AUTO`, `SCENE`, `SELECT_ROOMS`
+ * and `SELECT_ZONES` have each since been RUN on a T2351 and did what they name — so their numbers rest
+ * on observed behaviour rather than on the vendor's definition alone. `AUTO` is RUN with its payload:
+ * the vendor's definition calls `AutoClean.clean_times` valid only when non-zero, and the T2351 did
+ * not start on method 0 sent without it.
  *
  * That distinction is the whole point of checking, and this is the one place it is argued: an AIoT
  * data-point write is fire-and-forget, so a wrong number would be a different command arriving and
@@ -286,6 +287,8 @@ export const ModeCtrlMethod = {
  * scene id and a map id both arrive on DP 180.
  */
 export const ModeCtrlParamMethod = {
+  /** `START_AUTO_CLEAN` with an `AutoClean` payload — clean the whole floor. */
+  AUTO: { method: 0, param: 3 },
   /** `START_SELECT_ROOMS_CLEAN` — clean the named rooms of a named map. */
   SELECT_ROOMS: { method: 1, param: 4 },
   /** `START_SELECT_ZONES_CLEAN` — clean the given rectangles of a named map. */
@@ -328,6 +331,9 @@ const SELECT_ZONES_FIELD = {
 
 /** `scene_id` within a `SceneClean`. */
 const SCENE_CLEAN_ID = 1;
+
+/** `clean_times` within an `AutoClean`. */
+const AUTO_CLEAN_TIMES = 1;
 
 /** One room to clean, and where it falls in the running order. */
 export interface VacuumRoomTarget {
@@ -425,6 +431,15 @@ export function encodeSceneClean(sceneId: number): string {
 }
 
 /**
+ * Build a whole-floor auto clean carrying an `AutoClean` payload of one pass.
+ * @internal
+ */
+export function encodeAutoClean(): string {
+  const { method, param } = ModeCtrlParamMethod.AUTO;
+  return encodeModeCtrlParam(method, param, (p) => p.int(AUTO_CLEAN_TIMES, 1));
+}
+
+/**
  * The next `ModeCtrlRequest.seq` — ONE counter for every verb on DP 152.
  *
  * Confirmed against a live T2351: the app's start, pause, resume and go-home sent seq 124, 125, 126
@@ -443,16 +458,11 @@ function nextModeCtrlSeq(): number {
  * Built on {@link RawDpWriter} rather than hand-rolled bytes. The frame is unchanged and the existing
  * byte-level test is what proves it — that test was written against a live T2351 capture, so it holds
  * the writer to the wire rather than to this function's own idea of the wire.
- *
- * Method 0 (START_AUTO_CLEAN) is omitted rather than written as an explicit zero, per the proto3
- * default-field rule and confirmed on that same capture. The writer deliberately does not apply that
- * rule itself: whether an explicit zero and an absent field mean the same thing is the
- * message's business, not the encoder's.
  * @internal
  */
 export function encodeModeCtrl(method: number, seq: number): string {
   return rawDp((w) => {
-    if (method !== 0) w.int(MODE_CTRL_FIELD.METHOD, method);
+    w.int(MODE_CTRL_FIELD.METHOD, method);
     w.int(MODE_CTRL_FIELD.SEQ, seq);
   });
 }
@@ -2960,12 +2970,12 @@ export const VACUUM_CLEAN_MEMBERS = {
     description:
       "Stop smart-follow mode (ModeCtrlRequest method 18 over DP 152). Method number not captured — unverified.",
   },
-  /** Start an auto-clean run via ModeCtrlRequest method 0 (DP 152). AIoT only — Tuya write unverified. */
+  /** Start an auto-clean run via ModeCtrlRequest method 0 with one `AutoClean` pass (DP 152). AIoT only — Tuya write unverified. */
   startCleaning: method(
     ({ sink }) =>
       (): Promise<void> =>
-        sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeModeCtrl(ModeCtrlMethod.START_AUTO_CLEAN, nextModeCtrlSeq()))),
-    "Start an auto-clean run (ModeCtrlRequest method 0 over DP 152).",
+        sink.dispatch(aiotDp(VACUUM_DP.MODE_CTRL, encodeAutoClean())),
+    "Start an auto-clean run (ModeCtrlRequest method 0, AutoClean clean_times 1, over DP 152).",
     isAiotVacuum,
   ),
   /** Return to the dock via ModeCtrlRequest method 6 (DP 152). AIoT only — Tuya write unverified. */

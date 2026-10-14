@@ -1,10 +1,12 @@
 /**
- * Managed talkback session over P2P — the send-side twin of `live-stream.ts`. Takes AAC-LC audio from
- * a host, recovers frame boundaries, and paces the frames onto the wire at their own playback rate,
- * bracketed by the device's start/stop control frames.
+ * Managed talkback session over P2P — the send-side twin of `live-stream.ts`. Takes audio from a host in
+ * the codec the camera's speaker plays (AAC-LC ADTS, or raw AAC-ELD access units), recovers frame
+ * boundaries, and paces the frames onto the wire at their own playback rate, bracketed by the device's
+ * start/stop control frames.
  *
  * Pacing is the reason this exists rather than a bare `sendAudioFrame` loop. Each AAC-LC frame at
- * 16 kHz is 1024 samples — exactly 64 ms of audio — and the device plays what arrives when it arrives.
+ * 16 kHz is 1024 samples — exactly 64 ms of audio — and each AAC-ELD access unit is 512 samples, 32 ms.
+ * The device plays what arrives when it arrives.
  * A host piping a file would otherwise deliver a minute of audio in a few hundred milliseconds and
  * lose all but the tail. A live source paces itself and simply keeps the queue near-empty.
  *
@@ -17,7 +19,7 @@
  */
 import { EventEmitter } from "node:events";
 import { Writable } from "node:stream";
-import type { AacEncoder, StreamBudgetNotice, TalkbackHandle } from "../../core/contracts.js";
+import type { AacEncoder, StreamBudgetNotice, TalkbackCodec, TalkbackHandle } from "../../core/contracts.js";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import {
   AAC_FRAME_MS,
@@ -69,7 +71,17 @@ export interface TalkbackOptions {
   logger?: Logger;
 }
 
-const DEFAULT_HIGH_WATER_FRAMES = Math.ceil(2000 / AAC_FRAME_MS);
+/**
+ * Audio the pacing queue holds before a writable applies backpressure: two seconds, enough to ride out scheduler
+ * jitter without letting a file source buffer a whole clip in memory.
+ */
+const HIGH_WATER_MS = 2000;
+
+/**
+ * Playback duration of one `aac-eld` talkback access unit: ER AAC-ELD with LD-SBR (`f8f0212c00bc00`), 512 samples at
+ * 16 kHz.
+ */
+const TALKBACK_ELD_FRAME_MS = 32;
 
 /**
  * How long a talkback waits for audio before stopping itself. Comfortably longer than any gap a live
@@ -80,13 +92,14 @@ export const DEFAULT_IDLE_TIMEOUT_MS = 30_000;
 
 /**
  * A talkback session bound to one camera channel. Opens the device's path on construction via
- * {@link start}, then drains queued frames on a fixed 64 ms tick until {@link stop}.
+ * {@link start}, then drains queued frames on a tick of one frame's duration until {@link stop}.
  */
 export class Talkback extends EventEmitter implements TalkbackHandle {
   private readonly reader = new AdtsFrameReader();
   private readonly queue: Buffer[] = [];
   private readonly logger: Logger;
-  private readonly highWater: number;
+  /** Playback duration of one queued frame, the pacer's step: 64 ms for `aac-lc`, 32 ms for `aac-eld`. */
+  private frameMs = AAC_FRAME_MS;
   private readonly idleTimeoutMs: number;
   private timer?: ReturnType<typeof setInterval>;
   private started = false;
@@ -119,9 +132,16 @@ export class Talkback extends EventEmitter implements TalkbackHandle {
   ) {
     super();
     this.logger = opts.logger ?? noopLogger;
-    this.highWater = opts.highWaterFrames ?? DEFAULT_HIGH_WATER_FRAMES;
     this.idleTimeoutMs = opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
   }
+
+  /** Frames the pacing queue holds before a writable applies backpressure: {@link HIGH_WATER_MS} of this codec. */
+  private get highWater(): number {
+    return this.opts.highWaterFrames ?? Math.ceil(HIGH_WATER_MS / this.frameMs);
+  }
+
+  /** The codec this talkback sends, set by {@link start}. */
+  codec: TalkbackCodec = "aac-lc";
 
   /** Frames still queued for the wire. */
   get pending(): number {
@@ -132,25 +152,33 @@ export class Talkback extends EventEmitter implements TalkbackHandle {
    * Open the device's talkback path and begin the pacing tick. Throws when the topology's control
    * frame could not be sent — for a HomeBase-attached camera that means the level-2 key was never
    * negotiated, which would otherwise leave a silent session that accepts audio nobody hears.
+   *
+   * `codec` is the codec the camera's speaker plays; it fixes the input this talkback accepts and the pacing step.
    */
-  start(): this {
+  start(codec: TalkbackCodec): this {
     if (this.started) return this;
+    if (codec === "aac-eld" && this.opts.encoder) {
+      throw new Error("talkback: this camera plays aac-eld; an AacEncoder produces aac-lc");
+    }
+    this.codec = codec;
+    this.frameMs = codec === "aac-eld" ? TALKBACK_ELD_FRAME_MS : AAC_FRAME_MS;
     if (!this.sink.startTalkback(this.opts.channel, this.opts.homeBaseAttached)) {
       throw new Error(`talkback: could not open the audio path on channel ${this.opts.channel}`);
     }
     this.started = true;
     const now = Date.now();
-    this.nextDueAt = now + AAC_FRAME_MS;
+    this.nextDueAt = now + this.frameMs;
     this.lastWriteAt = now;
-    this.timer = setInterval(() => this.tick(), AAC_FRAME_MS);
+    this.timer = setInterval(() => this.tick(), this.frameMs);
     this.timer.unref?.();
     this.sink.on?.("audioGap", this.onAudioGap);
     return this;
   }
 
   /**
-   * Queue audio. Bytes are ADTS AAC, or PCM when an encoder was supplied; either way the input is
-   * treated as a stream, so a chunk carrying part of a frame is held until the rest arrives.
+   * Queue audio in the codec this talkback sends. For `aac-lc` the bytes are ADTS, or PCM when an encoder was
+   * supplied, read as a stream, so a chunk carrying part of a frame is held until the rest arrives. For `aac-eld`
+   * each call is one whole access unit; a unit over the device's length limit is dropped with an `error`.
    *
    * Audio written after {@link end} is dropped with an `error` rather than queued: `finished` has
    * either already fired or is owed on the frames written before it, so a late chunk would either play
@@ -163,6 +191,16 @@ export class Talkback extends EventEmitter implements TalkbackHandle {
       return;
     }
     this.lastWriteAt = Date.now();
+    if (this.codec === "aac-eld") {
+      if (chunk.length > MAX_AUDIO_FRAME_BYTES) {
+        this.fail(
+          new Error(`talkback: frame of ${chunk.length} B exceeds the device's ${MAX_AUDIO_FRAME_BYTES} B limit`),
+        );
+        return;
+      }
+      if (chunk.length) this.queue.push(chunk);
+      return;
+    }
     if (!this.opts.encoder) {
       this.enqueue(this.reader.push(chunk));
       return;
@@ -232,14 +270,14 @@ export class Talkback extends EventEmitter implements TalkbackHandle {
     if (this.stopped) return;
     const now = Date.now();
     if (!this.queue.length) {
-      this.nextDueAt = now + AAC_FRAME_MS;
+      this.nextDueAt = now + this.frameMs;
       this.idleCheck(now);
       this.announceFinishIfDone();
       return;
     }
     while (this.queue.length && now >= this.nextDueAt) {
       const frame = this.queue.shift()!;
-      this.nextDueAt += AAC_FRAME_MS;
+      this.nextDueAt += this.frameMs;
       try {
         this.sink.sendAudioFrame(this.opts.channel, frame);
       } catch (e) {
@@ -294,9 +332,11 @@ export class Talkback extends EventEmitter implements TalkbackHandle {
   /**
    * A Writable over {@link write} that withholds its callback while the queue is at the high-water
    * mark — which is what turns `pipe()` from a file into playback at speed rather than a memory spike.
+   * For `aac-eld` it is object-mode: each write is one access unit.
    */
   writable(): Writable {
     return new Writable({
+      objectMode: this.codec === "aac-eld",
       write: (chunk: Buffer, _enc, cb) => {
         this.write(chunk);
         if (this.queue.length < this.highWater) cb();

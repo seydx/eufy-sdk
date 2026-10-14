@@ -26,6 +26,7 @@ import { decodeMapFrame } from "./map-channels.js";
 import { VacuumMapStore } from "../model/index.js";
 import { type P2PSession, type P2PFrame } from "../transport/p2p/p2p-session.js";
 import { P2PCommandRouter } from "../transport/p2p/command-router.js";
+import { RtcCommandRouter, type RtcRoute } from "../transport/rtc/command-router.js";
 import { jpegGeometry } from "../transport/p2p/media.js";
 import type { PowerTier } from "../transport/p2p/session-manager.js";
 import { MqttCommandRouter } from "../transport/mqtt/command-router.js";
@@ -75,9 +76,9 @@ import {
   type DeviceInspection,
   type RawParams,
 } from "../model/index.js";
-import { isHomeBase } from "../model/device-family.js";
+import { isHomeBase, isNvrT8N00, isStation9000 } from "../model/device-family.js";
 import { cameraPowerTier } from "../model/capabilities/battery.js";
-import { DeviceRegistry, type ParamChange } from "./device-registry.js";
+import { DeviceRegistry, type DeviceRecord, type ParamChange } from "./device-registry.js";
 import type {
   EufyMegaOptions,
   EufyMegaEvent,
@@ -296,6 +297,8 @@ export class EufyMega extends EventEmitter {
   private readonly prewarmTiers: ReadonlySet<PowerTier>;
   /** Transport-side owner of the P2P sessions + all wire senders. */
   private readonly p2p: P2PCommandRouter;
+  /** Transport-side owner of the T9000 station sessions (sibling of {@link p2p}). */
+  private readonly rtc: RtcCommandRouter;
   /** Transport-side owner of the secure-MQTT ff09 lock/garage command path (sibling of {@link p2p}). */
   private readonly mqtt: MqttCommandRouter;
   /** Transport-side owner of the legacy Tuya REST command path for non-AIoT vacuums (G-series). */
@@ -362,6 +365,13 @@ export class EufyMega extends EventEmitter {
       onError: (e) => this.reportError(e),
       onLevel2Ready: (sn, cipherId) => this.emit("p2pLevel2Ready", { stationSn: sn, cipherId }),
       onFrame: (stationSn, f) => this.onP2PFrame(stationSn, f),
+    });
+    this.rtc = new RtcCommandRouter({
+      identity: () => this.mega.rtcIdentity(),
+      shard: () => this.mega.rtcShard,
+      country: opts.countryCode,
+      logger: opts.logger,
+      onError: (e) => this.reportError(e),
     });
     this.mqtt = new MqttCommandRouter({
       mega: this.mega,
@@ -618,12 +628,20 @@ export class EufyMega extends EventEmitter {
    *
    * The evidence set is widened, never replaced: the ids come back through the cloud record, and a
    * record that omits a realtime-only id would otherwise un-know it and re-trigger on the next report.
+   *
+   * The device is re-resolved against the fresh record before binding. A property gated on a
+   * realtime-only param enters the schema only once that param is evidence, and the value that made it
+   * evidence was stored before the property existed, so the record's realtime params are applied again
+   * to land it under the property's name.
    */
   private async rebindReads(sn: string): Promise<void> {
     const dev = this.liveDevices.get(sn)?.deref();
     if (!dev) return;
     try {
-      const ctx = await this.commandContext(sn);
+      const rec = await this.registry.record(sn);
+      dev.reresolve(rec);
+      if (rec.dpParams) this.applyAndAnnounce(dev, rec.dpParams);
+      const ctx = await this.commandContext(sn, rec);
       dev.bindActions(
         ctx,
         this.commandSinkFor(sn),
@@ -698,6 +716,8 @@ export class EufyMega extends EventEmitter {
    * only "differs from what was read before", which state already on hand can satisfy spuriously — and the
    * caller that has no expectation is the push path, where the signal itself is the news that a re-read is owed.
    *
+   * Only a write's observation throws at the deadline; a push with nothing moved answers `false`.
+   *
    * The cloud half is asked for through {@link DeviceRegistry.refreshedList}, never by fetching the account
    * list outright. The fetch is account-wide — one house list plus one device list per house — so a param that
    * never converges would otherwise spend a whole burst of those every iteration of this loop, and concurrent
@@ -749,6 +769,7 @@ export class EufyMega extends EventEmitter {
         if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
         if (refresh.expected !== undefined && settled()) return true;
       }
+      if (refresh.expected === undefined) return false;
       throw new StateConvergenceError({
         sn,
         property: refresh.property,
@@ -1111,8 +1132,10 @@ export class EufyMega extends EventEmitter {
    * The `eufy_life` DP writes (smart lights) are secure-MQTT-only. `aiot-dp` routes to either the
    * Anker AIoT MQTT stack or the legacy Tuya REST router depending on the device's category
    * (`eufy_home_tuya` → Tuya, everything else → MQTT). The capability layer emits a single `aiot-dp`
-   * kind and stays transport-agnostic; only the facade sees both sides and decides here. Everything
-   * else is P2P.
+   * kind and stays transport-agnostic; only the facade sees both sides and decides here. A T9000 or T8N00
+   * station and the devices attached to it go over RTC, with an attached device's command refused
+   * unless its channel resolves back to it on the station. T8N00 uses full SDP and admits direct and
+   * relay candidates; T9000 retains compact SDP and relay-only candidates. Everything else is P2P.
    */
   private routeCommand(sn: string, cmd: Command): Promise<void> {
     if (cmd.kind === "ff09-actuate" || cmd.kind === "ff09-autolock" || cmd.kind === "ff09-setting-toggle") {
@@ -1128,6 +1151,26 @@ export class EufyMega extends EventEmitter {
       const dev = this.registry.require(sn);
       if (dev.category === "eufy_home_tuya") return this.tuya.dispatchCommand(sn, cmd);
       return this.mqtt.dispatchCommand(sn, cmd);
+    }
+    const devices = this.registry.list();
+    const target = devices.find((d) => d.sn === sn);
+    const stationSn = target?.stationSn || sn;
+    const station = devices.find((d) => d.sn === stationSn);
+    const stationRaw = (station?.raw ?? {}) as { device_type?: unknown; member?: { admin_user_id?: unknown } };
+    const deviceType = typeof stationRaw.device_type === "number" ? stationRaw.device_type : undefined;
+    const family = { deviceType, model: station?.model };
+    const native = isNvrT8N00(family);
+    if (target && station && (isStation9000(family) || native)) {
+      const attached = stationSn !== sn;
+      if (attached && this.registry.serialForFrame(stationSn, cmd.channel) !== sn)
+        return Promise.reject(new Error("RTC command requires an unambiguous attached-device channel"));
+      const member = stationRaw.member?.admin_user_id;
+      const adminUserId = typeof member === "string" && member ? member : undefined;
+      const base: RtcRoute = { stationSn, adminUserId, attached };
+      return this.rtc.dispatchCommand(
+        native ? { ...base, signalingMode: "call", iceTransportPolicy: "all" } : base,
+        cmd,
+      );
     }
     return this.p2p.dispatchCommand(sn, cmd);
   }
@@ -2035,18 +2078,22 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * Restart a HomeBase.
+   * Restart a station: a HomeBase, or a camera-family device that is its own station.
    *
-   * **HomeBases only** — restart is a hub operation, so a non-HomeBase serial (a camera, an NVR)
-   * throws rather than doing nothing. The hub drops its connection and returns after a minute or two,
-   * so everything behind it is briefly offline. Verified on real hardware.
+   * The restart is `RESTART_HUB` on the station's broadcast channel, so it reaches whatever owns the
+   * P2P session. A standalone camera or doorbell owns its own session and is the station it restarts.
+   * A camera attached to a HomeBase is not — the same frame would restart its HomeBase — so its serial
+   * throws, as does any non-camera serial, rather than doing nothing. The device drops its connection
+   * and returns after a minute or two; a HomeBase takes everything behind it offline meanwhile.
+   * Verified on real hardware against a HomeBase and a standalone indoor camera.
    */
   async reboot(sn: string): Promise<void> {
     const ctx = await this.commandContext(sn);
-    if (!isHomeBase({ deviceType: ctx.deviceType, model: ctx.model })) {
+    const standaloneCamera = ctx.codec === "camera" && this.p2p.stationKeyOf(sn) === sn;
+    if (!isHomeBase({ deviceType: ctx.deviceType, model: ctx.model }) && !standaloneCamera) {
       throw new Error(
-        `reboot: ${sn} is not a HomeBase (deviceType ${ctx.deviceType ?? "?"}, model ${ctx.model ?? "?"}) — ` +
-          `restart is a hub-only operation`,
+        `reboot: ${sn} is neither a HomeBase nor a standalone camera (deviceType ${ctx.deviceType ?? "?"}, ` +
+          `model ${ctx.model ?? "?"}) — restart addresses the station that owns the P2P session`,
       );
     }
     await this.p2p.rebootStation(sn);
@@ -2080,8 +2127,9 @@ export class EufyMega extends EventEmitter {
     }
   }
 
-  private async commandContext(sn: string): Promise<CommandContext> {
-    const rec = await this.registry.record(sn);
+  /** The {@link CommandContext} for a device, built from `known` when that record is already in hand. */
+  private async commandContext(sn: string, known?: DeviceRecord): Promise<CommandContext> {
+    const rec = known ?? (await this.registry.record(sn));
     // Resolve the record synchronously from the registry (already loaded by `record()`) — the same
     // single lookup the command sink uses, and it never opens a transport just to read a record.
     const dev = this.registry.require(sn);
@@ -2308,6 +2356,7 @@ export class EufyMega extends EventEmitter {
     this.pollTimer.cancel();
     this.lastStateAnnounced.clear();
     await this.closeMqttTransports();
+    this.rtc.close();
     await this.p2p.closeAll();
     this.pushClient?.close();
     this.pushClient = undefined;

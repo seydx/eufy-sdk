@@ -7,7 +7,8 @@
  * Feed it {@link LiveVideoFrame}s (Annex-B) and optional station-declared AAC frames. It emits the
  * `init` segment once the video parameter sets and requested audio configuration are known, then a
  * media fragment at the first keyframe after `fragmentSeconds` has elapsed. Annex-B start codes are
- * rewritten to AVCC length prefixes and AAC's ADTS transport headers are removed from `mdat` samples.
+ * rewritten to AVCC length prefixes. AAC-LC's ADTS transport headers are removed from `mdat` samples; AAC-ELD
+ * arrives as raw access units and is stored as is.
  *
  * H.265 note: the `hvcC` NAL arrays (VPS/SPS/PPS) are exact; the profile/tier/level header fields use
  * safe Main-profile defaults (decoders re-read the SPS from the arrays).
@@ -48,7 +49,7 @@ interface Sample {
 }
 
 type AacCodec = Exclude<AudioCodec, "g711a">;
-const AAC_ELD_SAMPLES_PER_FRAME = 512;
+const AAC_ELD_SAMPLES_PER_FRAME = 480;
 const ADTS_FREQUENCY_INDEX_16K = 8;
 const ADTS_CHANNELS_MONO = 1;
 
@@ -65,6 +66,8 @@ export class Fmp4Muxer {
   private lastVideoTimestampMs?: number;
   private readonly audioRequested: boolean;
   private audioCodec?: AacCodec;
+  /** Decoder config of an AAC-ELD track, taken from its frames; absent for AAC-LC, whose `esds` config is fixed. */
+  private audioConfig?: Buffer;
   private audioDisabled = false;
   private audioSamples: Sample[] = [];
   private audioBaseDecodeTime = 0;
@@ -138,7 +141,10 @@ export class Fmp4Muxer {
     return undefined;
   }
 
-  /** Add one station-declared AAC access unit to the audio track. G.711 remains available via `live()`. */
+  /**
+   * Add one station-declared AAC access unit to the audio track: an ADTS frame for AAC-LC, a raw access unit
+   * described by its frame's config for AAC-ELD. G.711 remains available via `live()`.
+   */
   pushAudio(frame: LiveAudioFrame, timestampMs = now()): MediaFragment | undefined {
     if (!this.audioRequested || this.audioDisabled) return undefined;
     if (frame.codec === "g711a") {
@@ -151,12 +157,19 @@ export class Fmp4Muxer {
     if (this.audioCodec && this.audioCodec !== frame.codec) {
       return this.disableAudio();
     }
-    const header = parseAdtsHeader(frame.data);
-    if (!header || header.frameLength > frame.data.length) {
-      throw new Error(`fMP4 muxer: ${frame.codec} frame is not a complete ADTS access unit`);
-    }
-    if (header.frequencyIndex !== ADTS_FREQUENCY_INDEX_16K || header.channels !== ADTS_CHANNELS_MONO) {
-      return this.disableAudio();
+    let sample: Buffer;
+    if (frame.codec === "aac-eld") {
+      this.audioConfig = frame.config;
+      sample = frame.data;
+    } else {
+      const header = parseAdtsHeader(frame.data);
+      if (!header || header.frameLength > frame.data.length) {
+        throw new Error(`fMP4 muxer: ${frame.codec} frame is not a complete ADTS access unit`);
+      }
+      if (header.frequencyIndex !== ADTS_FREQUENCY_INDEX_16K || header.channels !== ADTS_CHANNELS_MONO) {
+        return this.disableAudio();
+      }
+      sample = frame.data.subarray(header.headerLength, header.frameLength);
     }
     this.audioCodec = frame.codec;
     this.firstAudioTimestampMs ??= timestampMs;
@@ -171,7 +184,7 @@ export class Fmp4Muxer {
       this.audioSamples[this.audioSamples.length - 1].duration = measured;
     }
     this.audioSamples.push({
-      data: frame.data.subarray(header.headerLength, header.frameLength),
+      data: sample,
       duration: frame.codec === "aac-eld" ? AAC_ELD_SAMPLES_PER_FRAME : AAC_SAMPLES_PER_FRAME,
       keyframe: true,
     });
@@ -482,7 +495,7 @@ export class Fmp4Muxer {
   }
 
   private esds(): Buffer {
-    const config = this.audioCodec === "aac-eld" ? Buffer.from([0xf8, 0xf0, 0x20]) : Buffer.from([0x14, 0x08]);
+    const config = this.audioConfig ?? Buffer.from([0x14, 0x08]);
     const specific = descriptor(0x05, config);
     const decoder = descriptor(
       0x04,

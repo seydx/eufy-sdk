@@ -246,7 +246,8 @@ export class AccessUnitAssembler {
    * `decode` extracts the payload of a frame, whatever the stream's encryption: it is called for EVERY
    * frame, including a continuation, because a continuation carries its own wrapped key ahead of its share
    * of the payload (measured: 129 bytes beyond what its header declares, exactly as a unit's first frame
-   * carries).
+   * carries). A continuation without its matching open unit has no Annex-B start code and cannot be emitted
+   * as a complete unit, even if its repeated header says keyframe.
    */
   push(payload: Buffer, decode: (payload: Buffer) => Buffer | undefined): AssembledAccessUnit[] {
     const header = parseVideoFrameHeader(payload);
@@ -265,6 +266,7 @@ export class AccessUnitAssembler {
       return [unitOf(open.header, Buffer.concat(open.chunks))];
     }
     this.discard();
+    if (!beginsAccessUnit(body)) return [];
     if (full) {
       this.open = { header, chunks: [body], carried: body.length };
       return [];
@@ -273,7 +275,7 @@ export class AccessUnitAssembler {
   }
 
   /** Forget an incomplete unit, counting and reporting it. */
-  private discard(): void {
+  discard(): void {
     const open = this.open;
     if (!open) return;
     this.open = undefined;

@@ -22,7 +22,7 @@ ships a bug that looks like success:
   fixtures, docs or commit messages. Flag any concrete-looking identifier.
 - **Consumer-agnostic surface.** Nothing in `src/`, `docs/` or `examples/` may name a specific host
   or its stack. Say "caller" or "host". Call it the SDK.
-- **Dependencies.** Three runtime deps, deliberately. A new `dependencies` entry needs a real
+- **Dependencies.** Four runtime deps, deliberately. A new `dependencies` entry needs a real
   justification in the PR; a `node:*` builtin or an inlined one-liner is the expected answer.
 - **Comments.** JSDoc above the declaration, no narration inside function bodies. A body comment
   means the JSDoc is incomplete.

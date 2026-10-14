@@ -381,7 +381,7 @@ export type EufyMegaEventMap = {
       sn: string;
       property: string;
       param: number;
-      expected?: boolean | number | string;
+      expected: boolean | number | string;
       observed?: boolean | number | string;
       timeoutMs: number;
     },

@@ -283,6 +283,37 @@ describe("catch-all event tag", () => {
     vi.useRealTimers();
   });
 
+  /**
+   * The station's MODE_SWITCH push trails the write that caused it — by seconds to over a minute — and the
+   * write's own observation has already converged and announced the change by then. The push then finds
+   * the new mode on hand and nothing left to move; that is an echo, not a write that failed to land.
+   */
+  it("lets a transition push whose state is already on hand lapse without a fault", async () => {
+    vi.useFakeTimers();
+    const eufy = client();
+    (eufy as any).liveDevices.set(
+      "T8000P0000000000",
+      new WeakRef({ getProperty: () => ({ value: 5 }), applyParams: () => undefined }),
+    );
+    vi.spyOn((eufy as any).registry, "require").mockReturnValue({ params: { 1224: "5" } });
+    vi.spyOn((eufy as any).registry, "getDevices").mockResolvedValue([]);
+    const faults: Error[] = [];
+    const seen: unknown[] = [];
+    eufy.on("error", (error) => faults.push(error));
+    eufy.on("armingModeChanged", (e) => seen.push(e));
+
+    (eufy as any).emitSemantic(
+      "armingModeChanged",
+      { deviceSn: "T8000P0000000000" },
+      { refresh: { param: 1224, property: "armingMode", timeoutMs: 20_000 } },
+    );
+    await vi.advanceTimersByTimeAsync(21_000);
+
+    expect(faults.map((error) => error.message)).toEqual([]);
+    expect(seen).toEqual([]);
+    vi.useRealTimers();
+  });
+
   it("keeps a genuine fault after the acknowledgement on the error bus", async () => {
     const eufy = client();
     (eufy as any).liveDevices.set(

@@ -93,8 +93,15 @@ function adts(payload: Buffer, frequencyIndex = 8, channels = 1): Buffer {
   ]);
 }
 
-function audio(codec: LiveAudioFrame["codec"], payload: Buffer): LiveAudioFrame {
+function audio(codec: "aac-lc", payload: Buffer): LiveAudioFrame {
   return { codec, data: adts(payload) };
+}
+
+/** A synthetic AudioSpecificConfig, distinct from any the SDK attaches, so a spec sees where `esds` takes it from. */
+const ELD_CONFIG = Buffer.from([0xf8, 0xf0, 0x21, 0x0a, 0x00, 0xbc, 0x00]);
+
+function eld(payload: Buffer): LiveAudioFrame {
+  return { codec: "aac-eld", data: payload, config: ELD_CONFIG };
 }
 
 describe("Fmp4Muxer H.264", () => {
@@ -173,20 +180,22 @@ describe("Fmp4Muxer audio", () => {
     expect(mdat.includes(Buffer.from([0xff, 0xf1]))).toBe(false);
   });
 
-  it("describes AAC-ELD as MPEG-4 audio object type 39", () => {
-    const mux = new Fmp4Muxer({ audio: true });
-    mux.push(kf("h264"), 1000);
-    const init = mux.pushAudio(audio("aac-eld", Buffer.from([1, 2, 3])), 1000)!;
-    expect(findBox(init.init!, "mp4a")).toBeDefined();
-    expect(findBox(init.init!, "esds")!.includes(Buffer.from([0xf8, 0xf0, 0x20]))).toBe(true);
-  });
-
-  it("uses 512 samples for the final AAC-ELD sample in a fragment", () => {
+  it("describes AAC-ELD with the frame's decoder config and keeps the raw access unit as the sample", () => {
     const mux = new Fmp4Muxer({ audio: true, fragmentSeconds: 0 });
     mux.push(kf("h264"), 1000);
-    mux.pushAudio(audio("aac-eld", Buffer.from([1, 2, 3])), 1000);
+    const payload = Buffer.from([0x73, 0x69, 0xa0, 0x4a, 0x52]);
+    const init = mux.pushAudio(eld(payload), 1000)!;
+    expect(findBox(init.init!, "esds")!.includes(ELD_CONFIG)).toBe(true);
     const out = mux.push(kf("h264"), 1100)!;
-    expect(boxesOfType(out.data, "trun")[1].readUInt32BE(20)).toBe(512);
+    expect(findBox(out.data, "mdat")!.includes(payload)).toBe(true);
+  });
+
+  it("uses 480 samples for the final AAC-ELD sample in a fragment", () => {
+    const mux = new Fmp4Muxer({ audio: true, fragmentSeconds: 0 });
+    mux.push(kf("h264"), 1000);
+    mux.pushAudio(eld(Buffer.from([1, 2, 3])), 1000);
+    const out = mux.push(kf("h264"), 1100)!;
+    expect(boxesOfType(out.data, "trun")[1].readUInt32BE(20)).toBe(480);
   });
 
   it("falls back to video-only when ADTS declares an unsupported sample rate", () => {
@@ -202,7 +211,7 @@ describe("Fmp4Muxer audio", () => {
     const mux = new Fmp4Muxer({ audio: true, fragmentSeconds: 0 });
     mux.push(kf("h264"), 1000);
     mux.pushAudio(audio("aac-lc", Buffer.from([1])), 1000);
-    expect(() => mux.pushAudio(audio("aac-eld", Buffer.from([2])), 1032)).not.toThrow();
+    expect(() => mux.pushAudio(eld(Buffer.from([2])), 1032)).not.toThrow();
     const out = mux.push(kf("h264"), 1100)!;
     expect(countType(out.data, "traf")).toBe(1);
   });

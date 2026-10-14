@@ -361,6 +361,12 @@ export interface CloudRecord {
   parentSn?: string;
   /** Reported param_type → raw value. Presence of a param is a capability signal. */
   params?: Record<number, string>;
+  /**
+   * Params the device reported over its realtime channel, keyed in the device's own namespace. A line
+   * whose state exists only on that channel carries none of it in {@link params}, so this is the
+   * evidence an availability gate on such a param is decided from.
+   */
+  dpParams?: Record<number, string>;
 }
 
 /** The fully-resolved device shape produced by the 3-tier resolver. */

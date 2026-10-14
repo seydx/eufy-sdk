@@ -54,6 +54,8 @@ export const MODEL_REGISTRY: Readonly<Record<string, RegistryEntry>> = {
   T8210: { codec: "camera", caps: ["doorbell", "battery"], name: "Video Doorbell" },
   // Confirmed against a real owned unit (named "Doorbell"): Video Doorbell Dual.
   T8214: { codec: "camera", caps: ["doorbell", "battery"], name: "Video Doorbell Dual" },
+  // Battery Video Doorbell Dual, vendor deviceType 91 (BATTERY_DOORBELL_PLUS), reported by two users.
+  T8213: { codec: "camera", caps: ["doorbell", "battery"], name: "Video Doorbell Dual" },
   // Confirmed against a real owned unit: the mains-powered Wired Doorbell 2K. No `battery` row
   // member on purpose — this model is wired, so the codec baseline plus inference is the whole
   // truth for power. Without this row it classified as a plain camera, so the doorbell capability
@@ -242,13 +244,15 @@ export function resolveDevice(rec: CloudRecord): ResolvedDevice {
  * The property manifest for a device, from its capabilities and the record's facts. The single place
  * an {@link AvailabilityContext} is built — so a family-gate (`available`) and a per-model enum
  * (`enumValuesFor`) are decided from the same truthful, session-free view on every path (initial
- * resolve and {@link Device.reresolve}). Populated only from what a record carries, never transport
- * fields a live session hasn't produced.
+ * resolve and {@link Device.reresolve}). Populated only from what a record carries: its cloud params and
+ * the params its device reported over realtime, the same evidence a bound getter is gated on. Never
+ * transport fields a live session hasn't produced.
  */
 export function resolveProperties(rec: CloudRecord, codec: Codec, capabilities: Capability[]): PropertySpec[] {
   const paramIds = new Set<number>();
-  if (rec.params && typeof rec.params === "object") {
-    for (const k of Object.keys(rec.params)) {
+  for (const reported of [rec.params, rec.dpParams]) {
+    if (!reported || typeof reported !== "object") continue;
+    for (const k of Object.keys(reported)) {
       const n = Number(k);
       if (Number.isFinite(n)) paramIds.add(n);
     }

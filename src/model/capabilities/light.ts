@@ -308,6 +308,9 @@ export const LIGHT_MEMBERS = {
    * This is the switch a user changes and expects to STAY changed. {@link isOn} is a different fact:
    * the lamp being lit right now, driven by whichever
    * client is streaming — the vendor app lights it for a live view and drops it on quitting.
+   *
+   * The T8423 write takes the session-chosen level; level-1 int+string was verified live on a standalone
+   * unit.
    */
   spotlightEnabled: {
     param: LIGHT_CMD.SPOTLIGHT_ENABLE,
@@ -317,7 +320,13 @@ export const LIGHT_MEMBERS = {
     description:
       "The spotlight master switch, distinct from the on/off above — whether the spotlight may light at " +
       "all. Read verified live on a T8170 (param 1403, direct polarity: 1 = enabled).",
-    write: (v, ctx) => directBinary(LIGHT_CMD.SPOTLIGHT_ENABLE, asBool(v) ? 1 : 0, ctx),
+    write: (v, ctx) =>
+      setScalar(
+        LIGHT_CMD.SPOTLIGHT_ENABLE,
+        asBool(v) ? 1 : 0,
+        ctx,
+        ctx.deviceType === DeviceType.FLOODLIGHT_CAMERA_8423 ? "auto" : "direct-binary",
+      ),
     writeAs: "setEnabled",
   },
 } as const satisfies Members;

@@ -14,9 +14,18 @@ function withDevice(logger?: { warn: (m: string) => void }) {
   const eufy = new EufyMega({ email: "t@example.com", password: "x", logger: logger as never });
   // A `Device` stand-in over the three methods this path calls. The announcement half has its own spec
   // (`realtime-property-changes.spec.ts`); here it answers nothing so only the re-bind is observable.
-  const dev = { bindActions: vi.fn(), applyParams: vi.fn(), announcements: vi.fn(() => []) };
+  const dev = {
+    bindActions: vi.fn(),
+    applyParams: vi.fn(),
+    announcements: vi.fn(() => []),
+    reresolve: vi.fn(() => []),
+  };
   (eufy as never as { liveDevices: Map<string, WeakRef<object>> }).liveDevices.set("VAC", new WeakRef(dev));
   (eufy as never as { boundParamIds: Map<string, ReadonlySet<number>> }).boundParamIds.set("VAC", new Set([0]));
+  const registry = (eufy as never as { registry: { record: (sn: string) => Promise<unknown> } }).registry;
+  const record = vi
+    .spyOn(registry, "record")
+    .mockResolvedValue({ params: {}, dpParams: { 153: "work-status" } } as never);
   const context = vi.spyOn(eufy as never as { commandContext: () => unknown }, "commandContext");
   context.mockResolvedValue({ paramIds: new Set([0, 153]) } as never);
   const report = (...slices: Record<number, string>[]) =>
@@ -28,7 +37,7 @@ function withDevice(logger?: { warn: (m: string) => void }) {
       "VAC",
       slices.map((params) => ({ params })),
     );
-  return { eufy, dev, context, report, settle: () => new Promise((r) => setTimeout(r, 0)) };
+  return { eufy, dev, record, context, report, settle: () => new Promise((r) => setTimeout(r, 0)) };
 }
 
 describe("rebindReads", () => {
@@ -40,7 +49,7 @@ describe("rebindReads", () => {
    * `get_device_param_list` POSTs — and announces itself twice.
    */
   it("re-binds once for a report two capabilities decoded", async () => {
-    const { eufy, context, report, settle } = withDevice();
+    const { eufy, context, record, report, settle } = withDevice();
     const seen: unknown[] = [];
     eufy.on("deviceState", (s) => seen.push(s));
 
@@ -48,6 +57,7 @@ describe("rebindReads", () => {
     await settle();
 
     expect(context).toHaveBeenCalledTimes(1);
+    expect(record).toHaveBeenCalledTimes(1);
     expect(seen).toHaveLength(2); // the report, then again once the reads exist
   });
 
@@ -140,5 +150,22 @@ describe("rebindReads", () => {
 
     const bound = (eufy as never as { boundParamIds: Map<string, ReadonlySet<number>> }).boundParamIds.get("VAC");
     expect([...bound!].sort((a, b) => a - b)).toEqual([0, 153]);
+  });
+
+  /**
+   * A property gated on a realtime-only param is outside the schema until that param is evidence, and
+   * the report that made it evidence was stored before the property existed. Re-resolving first and
+   * applying the record's realtime params again is what lands that value under the property's name.
+   */
+  it("re-resolves against the record and re-applies its realtime params before binding", async () => {
+    const { dev, record, report, settle } = withDevice();
+
+    report({ 153: "work-status" });
+    await settle();
+
+    const rec = await record.mock.results[0]!.value;
+    expect(dev.reresolve).toHaveBeenCalledWith(rec);
+    expect(dev.applyParams).toHaveBeenLastCalledWith({ 153: "work-status" });
+    expect(dev.reresolve.mock.invocationCallOrder[0]).toBeLessThan(dev.bindActions.mock.invocationCallOrder[0]!);
   });
 });

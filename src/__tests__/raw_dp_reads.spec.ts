@@ -137,3 +137,62 @@ describe("structured DP reads through the injected codec", () => {
     expect("activity" in dev.vacuumClean!()!).toBe(false);
   });
 });
+
+/**
+ * A scene list that exists only on the realtime feed. The member behind it is gated on DP 180 being
+ * evidence, which a robot's cloud record never makes it, so the schema has to see realtime evidence for
+ * the report to be stored under the member's name at all. Synthesized: one scene, id 5, valid.
+ */
+function sceneReport(): string {
+  const id = Buffer.from([0x0a, 0x02, 0x08, 0x05]);
+  const info = Buffer.concat([id, Buffer.from([0x10, 0x01])]);
+  const body = Buffer.concat([Buffer.from([0x22, info.length]), info]);
+  return Buffer.concat([Buffer.from([body.length]), body]).toString("base64");
+}
+
+describe("a structured read whose DP arrives only over realtime", () => {
+  const bindAiot = (dev: Device, ids: number[]) =>
+    dev.bindActions(
+      { channel: 0, codec: "vacuum", category: "eufy_home", paramIds: new Set(ids) },
+      noopSink,
+      undefined,
+      undefined,
+      rawDpCodec,
+    );
+
+  it("reads the scenes when the record's realtime params already carry DP 180", () => {
+    const dev = Device.fromRecord("T2351VAC", {
+      model: "T2351",
+      params: {},
+      dpParams: { [VACUUM_DP.SCENES]: sceneReport() },
+    });
+    dev.applyParams({ [VACUUM_DP.SCENES]: sceneReport() });
+    bindAiot(dev, [VACUUM_DP.SCENES]);
+
+    expect(
+      dev
+        .vacuumClean?.()
+        ?.scenes?.()
+        ?.map((s) => s.id),
+    ).toEqual([5]);
+  });
+
+  it("reads the scenes once a re-resolve sees DP 180 that arrived after the device was built", () => {
+    const dev = Device.fromRecord("T2351VAC", { model: "T2351", params: {} });
+    dev.applyParams({ [VACUUM_DP.SCENES]: sceneReport() });
+    bindAiot(dev, [VACUUM_DP.SCENES]);
+    expect(dev.vacuumClean?.()?.scenes?.()).toBeUndefined();
+
+    const dpParams = { [VACUUM_DP.SCENES]: sceneReport() };
+    dev.reresolve({ model: "T2351", params: {}, dpParams });
+    dev.applyParams(dpParams);
+    bindAiot(dev, [VACUUM_DP.SCENES]);
+
+    expect(
+      dev
+        .vacuumClean?.()
+        ?.scenes?.()
+        ?.map((s) => s.id),
+    ).toEqual([5]);
+  });
+});

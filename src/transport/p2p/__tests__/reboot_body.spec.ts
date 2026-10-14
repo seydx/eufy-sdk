@@ -1,4 +1,6 @@
+import { vi } from "vitest";
 import { buildDirectBinaryBody } from "../write-commands.js";
+import { connectedSession, routerWithSession, ACCOUNT_ID, STATION_SN } from "./session-fixtures.js";
 import { P2P_ENVELOPE } from "../envelope.js";
 
 /**
@@ -33,5 +35,26 @@ describe("RESTART_HUB reboot frame", () => {
     const withChannel = buildDirectBinaryBody(0, ACCOUNT, 0);
     expect(withChannel.length).toBe(136);
     expect(buildDirectBinaryBody(0, ACCOUNT).length).toBe(132);
+  });
+});
+
+/**
+ * A keyless session — a standalone camera, which never negotiates a level-2 key — gets the captured body
+ * sealed level-1, since a level-2 frame cannot be built without the key.
+ */
+describe("RESTART_HUB on a keyless session", () => {
+  it("sends the captured body sealed level-1 on channel 255, replayed", async () => {
+    const session = Object.assign(connectedSession(false), {
+      sendRawLevel2Bytes: vi.fn(() => true),
+      sendRawLevel1Bytes: vi.fn(() => true),
+    });
+    await routerWithSession(session).rebootStation(STATION_SN);
+    expect(session.sendRawLevel2Bytes).not.toHaveBeenCalled();
+    expect(session.sendRawLevel1Bytes).toHaveBeenCalledWith(
+      buildDirectBinaryBody(0, ACCOUNT_ID),
+      255,
+      P2P_ENVELOPE.RESTART_HUB,
+    );
+    expect(session.sendRawLevel1Bytes.mock.calls.length).toBeGreaterThan(1);
   });
 });

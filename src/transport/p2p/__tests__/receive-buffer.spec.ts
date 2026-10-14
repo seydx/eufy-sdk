@@ -11,15 +11,17 @@ import { P2PSession } from "../p2p-session.js";
 const REQUESTED = 4 * 1024 * 1024;
 
 function newSession() {
+  const debug = vi.fn();
   const warn = vi.fn();
   const session = new P2PSession({
     stationSn: "T8000P0000000000",
     p2pDid: "XXXXXXX-000000-XXXXX",
     noBroadcast: true,
-    logger: { debug: vi.fn(), info: vi.fn(), warn, error: vi.fn() },
+    logger: { debug, info: vi.fn(), warn, error: vi.fn() },
   });
   session.on("error", () => undefined);
-  return { session, warn };
+  const notes = () => debug.mock.calls.map((c) => String(c[0])).filter((m) => m.includes("UDP receive buffer"));
+  return { session, warn, notes };
 }
 
 async function connectAndClose(session: P2PSession) {
@@ -44,12 +46,13 @@ describe("the receive buffer a session's socket asks for", () => {
     expect(dgram.Socket.prototype.setRecvBufferSize).toHaveBeenCalledWith(REQUESTED);
   });
 
-  it("warns with the granted size when the OS lowered the request", async () => {
+  it("notes the granted size at debug, not warn, when the OS lowered the request", async () => {
     grant(212992 * 2);
-    const { session, warn } = newSession();
+    const { session, warn, notes } = newSession();
     await connectAndClose(session);
-    expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn.mock.calls[0]?.[0]).toContain("granted 425984");
+    expect(notes()).toHaveLength(1);
+    expect(notes()[0]).toContain("granted 425984");
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it("connects and warns instead of throwing when the OS refuses the request", async () => {
@@ -61,11 +64,11 @@ describe("the receive buffer a session's socket asks for", () => {
     expect(warn.mock.calls[0]?.[0]).toContain("request refused");
   });
 
-  it("warns once per session, not again on a reconnect", async () => {
+  it("notes it once per session, not again on a reconnect", async () => {
     grant(212992 * 2);
-    const { session, warn } = newSession();
+    const { session, notes } = newSession();
     await connectAndClose(session);
     await connectAndClose(session);
-    expect(warn).toHaveBeenCalledTimes(1);
+    expect(notes()).toHaveLength(1);
   });
 });

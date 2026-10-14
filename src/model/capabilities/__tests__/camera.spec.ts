@@ -12,7 +12,6 @@ import {
   StreamingQuality,
   STREAMING_QUALITY_TIERS,
   resolveStreamingQuality,
-  resolveStreamingQualityTier,
 } from "../camera.js";
 import type { RecordingQualityName } from "../camera.js";
 import { buildCommand } from "../index.js";
@@ -43,6 +42,7 @@ describe("camera capability module", () => {
   it("declares the capability + schema", () => {
     expect(CAMERA.capability).toBe("camera");
     expect(CAMERA.properties.map((p) => p.name)).toEqual([
+      "wifiRssi",
       "enabled",
       "imageFlipped",
       "watermark",
@@ -56,6 +56,23 @@ describe("camera capability module", () => {
       "antiTheftDetection",
       "statusLed",
     ]);
+  });
+
+  describe("wifiRssi", () => {
+    it.each([
+      { deviceType: 47, model: "T8425", homeBaseAttached: true },
+      { deviceType: 31, model: "T8410", homeBaseAttached: false },
+    ])("reads reported signal on $model and follows cache updates", (identity) => {
+      const dev = Device.fromRecord("SN", { ...identity, params: { 1142: "-62" } });
+      dev.bindActions(ctx(0, { ...identity, paramIds: new Set([1142]) }), { dispatch: async () => undefined });
+      const acts = dev.camera!()!;
+      expect(acts.wifiRssi).toBe(-62);
+      expect("setWifiRssi" in acts).toBe(false);
+      dev.applyParams({ 1142: "0" });
+      expect(acts.wifiRssi).toBe(0);
+      dev.applyParams({ 1142: "not-a-number" });
+      expect(acts.wifiRssi).toBeUndefined();
+    });
   });
 
   // Every wire here was captured from the app on an indoor pan-tilt (standalone, mains) and read back
@@ -306,23 +323,24 @@ describe("camera capability module", () => {
       expect(byName).toMatchObject({ cmd: CAMERA_CMD.RECORDING_QUALITY_SET, payload: { quality: 1 } });
     });
 
-    it("streamingQuality is read-only: the write is unconfirmed, so no setter exists", () => {
-      // Tier 0 is Auto, which recording has no equivalent for — the domains are not interchangeable.
+    it("streamingQuality → 2730's 1350 payload, and it is NOT the recording wire", () => {
       expect(STREAMING_QUALITY_TIERS[0]).toBe("Auto");
       expect(RECORDING_QUALITY_TIERS[0]).toBeUndefined();
       expect(resolveStreamingQuality(3)).toBe("Max");
-      expect(resolveStreamingQualityTier(StreamingQuality.Auto)).toBe(0);
-      expect(resolveStreamingQualityTier(StreamingQuality.Max)).toBe(3);
-      expect(resolveStreamingQualityTier(0)).toBe(0);
-      for (const bad of [-1, 4, 99, "nope"]) expect(resolveStreamingQualityTier(bad as number)).toBeUndefined();
-      // Replaying the app's 2730 frame from here changed nothing on the device, so the intent throws
-      // rather than reporting the camera as lacking the feature.
-      expect(() => buildCommand("streamingQuality", 2, ctx(0))).toThrow();
-      // The sibling that IS confirmed still routes, and to a different sub-command.
+      const cmd = buildCommand("streamingQuality", StreamingQuality.Auto, ctx(0));
+      expect(cmd).toMatchObject({
+        kind: "set-payload",
+        cmd: CAMERA_CMD.STREAMING_QUALITY_SET,
+        mValue3: 0,
+        form: "auto",
+        payload: { channel: 0, mode: 0, primary_view: 0, quality: 0 },
+      });
+      expect(CAMERA_CMD.STREAMING_QUALITY_SET).not.toBe(CAMERA_CMD.RECORDING_QUALITY_SET);
       expect(buildCommand("recordingQuality", 3, ctx(0))).toMatchObject({
         cmd: CAMERA_CMD.RECORDING_QUALITY_SET,
       });
-      expect(CAMERA_CMD.STREAMING_QUALITY_SET).not.toBe(CAMERA_CMD.RECORDING_QUALITY_SET);
+      expect((cmd as { payload: Record<string, unknown> }).payload.transaction).toMatch(/^\d{13}$/);
+      expect(buildCommand("streamingQuality", "Max", ctx(2))).toMatchObject({ payload: { quality: 3 } });
     });
 
     it("recordingQuality throws on a value that isn't a real tier (no bogus value on the fire-and-forget wire)", () => {

@@ -217,9 +217,10 @@ export class RecordingDownloadError extends Error {
  * A recording downloaded from the station, as elementary streams.
  *
  * `video` is Annex-B H.264 in decode order, `audio` AAC-LC 16 kHz mono in ADTS framing (absent when the
- * recording carried none that could be decoded). `frames` counts the distinct video frames received,
- * `missingFrames` the ones the camera numbered but that never arrived, and `durationMs` spans the first
- * to the last received frame by the camera's own timestamps; `fps` is derived from those two stamps.
+ * recording carried none that could be decoded). `frames` counts the distinct video sequences emitted.
+ * `missingFrames` counts gaps between received sequences and received sequences that yielded no usable
+ * picture, including at either end. `durationMs` spans the first to the last emitted picture by the
+ * camera's own timestamps; `fps` is derived from those stamps.
  */
 export interface RecordingDownload {
   video: Buffer;
@@ -293,7 +294,7 @@ export interface StateConvergenceFailure {
   property: string;
   param: number;
   /** The RAW param value the write asked the device to report. */
-  expected?: boolean | number | string;
+  expected: boolean | number | string;
   /** What the param actually read when the deadline passed, absent where the device reported none at all. */
   observed?: boolean | number | string;
   timeoutMs: number;
@@ -312,7 +313,7 @@ export class StateConvergenceError extends Error {
   readonly sn: string;
   readonly property: string;
   readonly param: number;
-  readonly expected?: boolean | number | string;
+  readonly expected: boolean | number | string;
   readonly observed?: boolean | number | string;
   readonly timeoutMs: number;
 
@@ -608,16 +609,34 @@ export interface LiveVideoConfig {
  */
 export type AudioCodec = "aac-lc" | "aac-eld" | "g711a";
 
+/** The codec a camera's speaker plays: `aac-eld` on a camera whose speaker plays it, `aac-lc` otherwise. */
+export type TalkbackCodec = Extract<AudioCodec, "aac-lc" | "aac-eld">;
+
 /**
  * One audio access unit, carrying the codec the station declared for it.
  *
- * Sample rate and channel count are deliberately absent: they are not on the wire. The v6 app assumes
- * 16 kHz mono for every audio type rather than reading them, so the SDK does not invent fields the
- * device never sent.
+ * Sample rate and channel count are absent for `aac-lc` and `g711a`: they are not on the wire, and the v6 app
+ * assumes 16 kHz mono for every audio type rather than reading them. An `aac-lc` frame is one ADTS frame and
+ * `g711a` is raw A-law. An `aac-eld` frame is one raw access unit with no transport framing, so it carries the
+ * AudioSpecificConfig that decodes it.
  */
-export interface LiveAudioFrame {
-  /** Codec declared in the frame header. */
-  codec: AudioCodec;
+export type LiveAudioFrame = (
+  | {
+      /** Codec declared in the frame header. */
+      codec: "aac-lc" | "g711a";
+      /** One ADTS frame for `aac-lc`, raw A-law samples for `g711a`. */
+      data: Buffer;
+      config?: undefined;
+    }
+  | {
+      /** Codec declared in the frame header. */
+      codec: "aac-eld";
+      /** One raw AAC-ELD access unit. */
+      data: Buffer;
+      /** AudioSpecificConfig (ISO/IEC 14496-3) that decodes `data`. */
+      config: Buffer;
+    }
+) & {
   /**
    * When the station captured this unit, in milliseconds on the same station clock as
    * {@link LiveVideoFrame.timestamp}, as its frame header states it. Absent where a producer has no header.
@@ -626,9 +645,7 @@ export interface LiveAudioFrame {
    * AAC units carried stamps 40, 70 or 100 ms apart while each held a fixed number of samples.
    */
   timestamp?: number;
-  /** Elementary-stream bytes (ADTS-framed for the two AAC profiles). */
-  data: Buffer;
-}
+};
 
 /**
  * One fragmented-MP4 (CMAF) output unit from the native muxer. `init` (the `ftyp`+`moov` init
@@ -939,10 +956,11 @@ export interface MediaProvider {
 }
 
 /**
- * An encoder that turns raw PCM into AAC-LC frames, supplied by the CALLER. The SDK ships none: the
- * device's audio path is fixed at AAC-LC 16 kHz mono, and every plausible encoder is either a native
+ * An encoder that turns raw PCM into AAC-LC frames, supplied by the CALLER. The SDK ships none: an
+ * `aac-lc` speaker plays AAC-LC 16 kHz mono, and every plausible encoder is either a native
  * dependency or an external process, both of which belong to the host rather than to a protocol SDK.
- * It is unnecessary where the audio is already AAC — see {@link TalkbackHandle}.
+ * It is unnecessary where the audio is already AAC — see {@link TalkbackHandle}. A camera whose speaker
+ * plays `aac-eld` refuses an encoder: a talkback opened with one is rejected before the speaker path opens.
  *
  * `encode` receives 16-bit little-endian mono PCM at 16 kHz and returns whole ADTS frames, zero or
  * more per call (an encoder buffers until it has a full 1024-sample block). `flush` drains a partial
@@ -958,17 +976,19 @@ export interface AacEncoder {
  * A live talkback session: audio pushed from the host to a camera's speaker, the mirror of
  * {@link LiveStreamHandle}'s inbound feed.
  *
- * Audio must be **AAC-LC, 16 kHz, mono, in ADTS frames** — what the device's path is fixed at, so a
- * stream at another rate or channel count is rejected rather than resampled (it would otherwise play
- * at the wrong pitch and speed). Feed it either way:
+ * Audio must be in the codec the camera's speaker plays, {@link TalkbackHandle.codec}:
  *
- *  - **ADTS AAC** — the default. Chunk boundaries are irrelevant; frames are recovered from the
- *    stream, so piping an encoder's output straight in works.
- *  - **PCM** — only when the handle was opened with an {@link AacEncoder}, which then does the
- *    conversion. `write` takes 16-bit little-endian mono PCM at 16 kHz instead.
+ *  - **`aac-lc`:** AAC-LC, 16 kHz, mono, in ADTS frames, through `write` / `writable()`. Chunk boundaries are
+ *    irrelevant; frames are recovered from the stream. With an {@link AacEncoder}, `write` takes 16-bit
+ *    little-endian mono PCM at 16 kHz instead.
+ *  - **`aac-eld`:** one raw AAC-ELD access unit with LD-SBR (16 kHz, mono, 512 samples) per `write`, or per
+ *    object-mode `writable()` write. No encoder applies.
  *
- * Frames are **paced** at their own playback rate (64 ms each) rather than flushed as fast as they
- * arrive, so feeding a file plays it at speed instead of overrunning the device. A live source keeps
+ * An `aac-lc` stream at another rate or channel count is rejected rather than resampled. An `aac-eld` unit longer
+ * than the device accepts is refused with an `error`.
+ *
+ * Frames are **paced** at their own playback rate (64 ms for `aac-lc`, 32 ms for `aac-eld`) rather than flushed as
+ * fast as they arrive, so feeding a file plays it at speed instead of overrunning the device. A live source keeps
  * the queue near-empty and is unaffected.
  *
  * @example
@@ -980,7 +1000,16 @@ export interface AacEncoder {
  * ```
  */
 export interface TalkbackHandle {
-  /** Queue audio — ADTS frames, or PCM when an encoder was supplied. Partial frames are held. */
+  /**
+   * The codec this camera's speaker plays: `aac-eld` on a camera whose speaker plays it and whose stream on the same
+   * media session carries `aac-eld`, `aac-lc` otherwise, including when that stream carries no audio. It decides
+   * what {@link write} and {@link writable} take.
+   */
+  readonly codec: TalkbackCodec;
+  /**
+   * Queue audio: ADTS frames or PCM for `aac-lc`, one access unit per call for `aac-eld`. Partial ADTS frames are
+   * held.
+   */
   write(chunk: Buffer): void;
   /**
    * A `node:stream` Writable over {@link write}, for piping a file or an encoder's stdout. Applies
@@ -1003,7 +1032,7 @@ export interface TalkbackHandle {
    *
    * This deliberately does NOT fire on a merely-empty queue. A realtime source keeps the queue near
    * empty by design, so "queue is empty" arrives after the very first frame and stopping on it would
-   * cut the clip to 64 ms. {@link pending} is the instantaneous depth.
+   * cut the clip to one frame. {@link pending} is the instantaneous depth.
    */
   on(event: "finished", listener: () => void): this;
   /**
