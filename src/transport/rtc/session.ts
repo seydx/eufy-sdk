@@ -44,6 +44,8 @@ export interface RtcSessionEvents {
   commandData: [frame: Buffer, linkType: number];
   /** A reassembled live-video frame. */
   mediaData: [frame: Buffer];
+  /** The hub echoed the portal keepalive on the command channel. */
+  keepaliveEcho: [];
 }
 
 interface CallPayload {
@@ -111,6 +113,7 @@ export class RtcSession extends EventEmitter<RtcSessionEvents> {
       }
     });
     this.peer.on("error", (e) => this.emit("error", e));
+    this.peer.on("keepaliveEcho", () => this.emit("keepaliveEcho"));
     this.peer.on("data", (frame, linkType) => {
       if (linkType === PortalLinkType.LIVE) this.emit("mediaData", frame);
       else this.emit("commandData", frame, linkType);

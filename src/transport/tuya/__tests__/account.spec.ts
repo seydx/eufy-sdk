@@ -10,7 +10,7 @@ import {
 
 describe("Tuya account derivation", () => {
   it("prefixes the eufy user id for the username", () => {
-    expect(tuyaUsername("12345")).toBe("eufyhome-12345");
+    expect(tuyaUsername("12345")).toBe("eh-12345");
   });
 
   it("key and iv are the fixed 16-byte AES vectors", () => {
@@ -21,11 +21,11 @@ describe("Tuya account derivation", () => {
   });
 
   it("derives the password as uppercase-hex AES-128-CBC-NoPadding (golden vectors)", () => {
-    // "eufyhome-12345" is 14 chars → leading-zero-padded to 16 before the cipher.
-    expect(deriveTuyaPassword("12345")).toBe("1774D45DA407A2B5D2D60C7AEDA64A74");
-    // "eufyhome-1234567890abcdef" is 25 chars → padded to 32 (two blocks).
+    // "eh-12345" is 8 chars → leading-zero-padded to 16 before the cipher.
+    expect(deriveTuyaPassword("12345")).toBe("7E47F843AA735A651009E482905388B3");
+    // "eh-1234567890abcdef" is 19 chars → padded to 32 (two blocks).
     expect(deriveTuyaPassword("1234567890abcdef")).toBe(
-      "0B5B68B67CF1306129DE56149207CACE29B490F564822213D48A2D3AC426E969",
+      "40B9941CB7740BAEFC22D226666A4CD19542C8F67924B41E872430B0FE116E0D",
     );
   });
 
@@ -70,8 +70,8 @@ describe("Tuya account derivation", () => {
   it("deriveTuyaAccount assembles username + password + countryCode", () => {
     const acct = deriveTuyaAccount("12345", "44");
     expect(acct).toEqual({
-      username: "eufyhome-12345",
-      password: "1774D45DA407A2B5D2D60C7AEDA64A74",
+      username: "eh-12345",
+      password: "7E47F843AA735A651009E482905388B3",
       countryCode: "44",
     });
   });

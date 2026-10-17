@@ -3,6 +3,7 @@ import { unobservableMembers } from "../members.js";
 import { buildCommand, detectCapabilities } from "../index.js";
 import { bind } from "./bind.js";
 import type { CommandContext } from "../types.js";
+import { DeviceType } from "../../device-types.js";
 import type { Command } from "../../../core/contracts.js";
 
 /**
@@ -109,6 +110,21 @@ describe("light capability module", () => {
         value: 1,
         form: "int-string",
         channel: 0,
+      });
+    });
+
+    it("on/off on an E330 Pro / T8600 (deviceType 24) → set-param pinned to int-string (1400)", () => {
+      expect(intent("on", true, { ...ctx(2), deviceType: DeviceType.PROFESSIONAL_247 })).toEqual({
+        kind: "set-param",
+        param: LIGHT_CMD.FLOODLIGHT_SWITCH,
+        value: 1,
+        form: "int-string",
+        channel: 2,
+      });
+      expect(intent("off", false, { ...ctx(), deviceType: DeviceType.PROFESSIONAL_247 })).toMatchObject({
+        kind: "set-param",
+        form: "int-string",
+        value: 0,
       });
     });
 

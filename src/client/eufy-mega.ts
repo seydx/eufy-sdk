@@ -31,7 +31,7 @@ import { jpegGeometry } from "../transport/p2p/media.js";
 import type { PowerTier } from "../transport/p2p/session-manager.js";
 import { MqttCommandRouter } from "../transport/mqtt/command-router.js";
 import { TuyaCommandRouter } from "../transport/tuya/command-router.js";
-import { TuyaDpRouter, parseTuyaDpReport } from "../transport/tuya/dp-codec.js";
+import { TuyaDpRouter } from "../transport/tuya/dp-codec.js";
 import { rawDpCodec } from "../transport/raw-dp.js";
 import { resolveLightEffect as resolveLightEffectHttp } from "../transport/http/light-catalog.js";
 import {
@@ -76,7 +76,7 @@ import {
   type DeviceInspection,
   type RawParams,
 } from "../model/index.js";
-import { isHomeBase, isNvrT8N00, isStation9000 } from "../model/device-family.js";
+import { isHomeBase, isNvrT8N00, isStation9000, isTuyaVacuum } from "../model/device-family.js";
 import { cameraPowerTier } from "../model/capabilities/battery.js";
 import { DeviceRegistry, type DeviceRecord, type ParamChange } from "./device-registry.js";
 import type {
@@ -540,7 +540,8 @@ export class EufyMega extends EventEmitter {
    *
    * Skipped entirely for a device with a pollable cloud record, for an already-reporting device, and
    * when realtime is off — so the common path adds nothing. Resolving on timeout leaves a silent device
-   * read-less rather than failing the lookup.
+   * read-less rather than failing the lookup. A Tuya clean-line device waits on the Tuya cloud read the
+   * bring-up started, so no broker is brought up for it.
    */
   private async awaitFirstRealtimeState(sn: string): Promise<void> {
     if (this.opts.autoRealtime === false || this.realtimeGeneration?.epoch !== this.realtimeEpoch) return;
@@ -552,10 +553,12 @@ export class EufyMega extends EventEmitter {
     if (!dev || dev.realtime !== "smqtt") return;
     const caps = this.registry.capabilitiesForDevice(sn);
     if (!caps || !hasRealtimeReads(caps)) return;
-    try {
-      await this.ensureMqttStarted(mqttScopeFor(dev));
-    } catch {
-      return;
+    if (!isTuyaVacuum(dev)) {
+      try {
+        await this.ensureMqttStarted(mqttScopeFor(dev));
+      } catch {
+        return;
+      }
     }
     await this.registry.awaitRealtimeState(sn, timeoutMs);
   }
@@ -667,9 +670,34 @@ export class EufyMega extends EventEmitter {
     }
   }
 
-  /** The distinct credential scopes the current MQTT roster needs — no devices on a scope, no connection. */
+  /**
+   * The distinct credential scopes the current MQTT roster needs — no devices on a scope, no connection.
+   * A Tuya clean-line device (`eufy_home_tuya`) needs none: the broker refuses its topics, and its state
+   * is read from the Tuya cloud.
+   */
   private mqttScopesInUse(): MqttScope[] {
-    return [...new Set(this.getMqttDevices().map(mqttScopeFor))];
+    return [
+      ...new Set(
+        this.getMqttDevices()
+          .filter((d) => !isTuyaVacuum(d))
+          .map(mqttScopeFor),
+      ),
+    ];
+  }
+
+  /**
+   * Read every Tuya clean-line device's DPs from the Tuya cloud and deliver them as realtime state. A
+   * failed read is reported, not fatal, and leaves that device's state as it was.
+   */
+  private readTuyaDevices(): void {
+    for (const d of this.getMqttDevices().filter(isTuyaVacuum)) {
+      this.tuya
+        .fetchDps(d.sn)
+        .then((dps) => {
+          if (dps) this.tuyaDpRouter.deliver(d.sn, dps);
+        })
+        .catch((e) => this.reportError(e));
+    }
   }
 
   /**
@@ -826,13 +854,24 @@ export class EufyMega extends EventEmitter {
   private recycleStandaloneSession(sn: string): Promise<void> {
     const releaseWrite = new Promise<void>((resolve) => void setTimeout(resolve, SESSION_RECYCLE_WAIT_MS).unref?.());
     return Promise.race([
-      this.p2p.resetStandaloneSession(sn),
+      this.p2p.resetStandaloneSession(sn).finally(() => this.reopenWiredStation(sn)),
       releaseWrite.then(() =>
         this.opts.logger?.debug(
           `[session ${sn}] recycle still waiting on an attached viewer — releasing the write that asked for it`,
         ),
       ),
     ]);
+  }
+
+  /** Reopen a wired station that {@link recycleStandaloneSession} closed, while the generation that warmed it is current. */
+  private reopenWiredStation(sn: string): void {
+    const generation = this.realtimeGeneration;
+    if (generation?.epoch !== this.realtimeEpoch) return;
+    if (this.p2p.stationKeyOf(sn) !== sn || !this.registry.p2pDevices().some((d) => d.sn === sn)) return;
+    if (this.stationPower(sn) !== "wired") return;
+    void this.p2p.ensureStation(sn, generation.abort.signal).catch((error) => {
+      if (!generation.abort.signal.aborted) this.reportError(error);
+    });
   }
 
   /**
@@ -1183,7 +1222,7 @@ export class EufyMega extends EventEmitter {
     }
     if (cmd.kind === "aiot-dp") {
       const dev = this.registry.require(sn);
-      if (dev.category === "eufy_home_tuya") return this.tuya.dispatchCommand(sn, cmd);
+      if (isTuyaVacuum(dev)) return this.tuya.dispatchCommand(sn, cmd);
       return this.mqtt.dispatchCommand(sn, cmd);
     }
     const route = this.rtcRouteFor(sn);
@@ -1229,8 +1268,9 @@ export class EufyMega extends EventEmitter {
    *
    * Side-effect: registers `eufy_home_tuya` devices with the Tuya command router so
    * the command dispatcher can resolve a eufy SN → Tuya devId without a separate lookup.
-   * The Tuya id is extracted from the device's raw cloud record (`tuya_uuid`, `tuya_virtual_id`,
-   * `tuya_device_id`, or `virtualId` fields — whichever is non-empty).
+   * The Tuya id is the first non-empty `tuya_uuid`, `tuya_virtual_id`, `tuya_device_id` or
+   * `virtualId` on the raw cloud record, else the device's serial: the app keys its Tuya device by
+   * the eufy device id, and a record that carries none of those fields is read under its serial.
    *
    * A partial cloud outage still resolves, with the devices that answered plus the ones already known — but a
    * session the cloud has rejected REJECTS, with {@link SessionExpiredError}. An empty list would be
@@ -1239,10 +1279,9 @@ export class EufyMega extends EventEmitter {
   async getDevices(): Promise<EufyDevice[]> {
     const devices = await this.registry.getDevices();
     for (const dev of devices) {
-      if (dev.category !== "eufy_home_tuya") continue;
+      if (!isTuyaVacuum(dev)) continue;
       const raw = (dev.raw ?? {}) as Record<string, unknown>;
-      const devId = tuyaDevIdFrom(raw);
-      if (devId) this.tuya.registerDevice(dev.sn, devId);
+      this.tuya.registerDevice(dev.sn, tuyaDevIdFrom(raw) ?? dev.sn);
     }
     return devices;
   }
@@ -1426,6 +1465,7 @@ export class EufyMega extends EventEmitter {
     try {
       if (!this.registry.list().length) await this.getDevices();
       if (epoch !== this.realtimeEpoch) return this.settleRealtimeGeneration(generation, "superseded");
+      this.readTuyaDevices();
       const scopes = this.mqttScopesInUse();
       readiness.mqtt = createPlaneReadiness(scopes.length);
       let push: PushClient | undefined;
@@ -1743,6 +1783,17 @@ export class EufyMega extends EventEmitter {
     await this.p2p.ensureStation(this.p2p.stationKeyOf(deviceSn), signal);
   }
 
+  /**
+   * Keep a T9000 station's RTC command session open and warm, so a command fires without a cold reconnect.
+   * Answers the hold's disposer; throws for any other station, and while logged out.
+   */
+  keepStationWarm(stationSn: string): () => void {
+    const { t9000 } = this.stationOf(stationSn);
+    const route = this.rtcRouteFor(stationSn);
+    if (!t9000 || !route) throw new Error(`rtc: ${stationSn} has no warm command session`);
+    return this.rtc.keepWarm(route);
+  }
+
   /** Eagerly open P2P sessions for WIRED stations only (persistent — they don't drain). Battery
    *  stations stay closed until an on-demand open. Best-effort per station. */
   private async warmWiredP2P(
@@ -1899,16 +1950,6 @@ export class EufyMega extends EventEmitter {
     transport.on("message", (m) => {
       this.emit("message", m); // raw MQTT message (low-level escape hatch)
       if (m.deviceSn) {
-        const dev = this.registry.list().find((d) => d.sn === m.deviceSn);
-        if (dev?.category === "eufy_home_tuya") {
-          const dps = parseTuyaDpReport(m.raw);
-          if (dps) {
-            this.tuyaDpRouter.deliver(m.deviceSn, dps);
-            return;
-          }
-        }
-      }
-      if (m.deviceSn) {
         // The map stream. A protocol-41 message is nothing else, so it stops here rather than being
         // walked by DP parsers that would each correctly decline it.
         const frame = parseBizMapFrame(m.raw);
@@ -1942,22 +1983,15 @@ export class EufyMega extends EventEmitter {
   /**
    * Subscribe the devices on one credential scope; a failing subscribe is reported, not fatal (one
    * unreachable device must not stop the rest of the roster from coming up).
+   *
+   * A Tuya clean-line device (`eufy_home_tuya`) is not subscribed: its state lives on the Tuya cloud,
+   * and the broker refuses its `eufy_home` topics on every credential.
    */
   private async subscribeMqttDevices(scope: MqttScope, transport: SecureMqtt): Promise<void> {
-    for (const d of this.getMqttDevices().filter((dev) => mqttScopeFor(dev) === scope)) {
+    for (const d of this.getMqttDevices().filter((dev) => !isTuyaVacuum(dev) && mqttScopeFor(dev) === scope)) {
       try {
         await transport.subscribeDevice(d);
         await this.sendRealtimeInit(d.sn);
-        // For Tuya clean-line devices, poll cached DPs immediately after subscribe so the
-        // capability getters have state before the first realtime push arrives.
-        if (d.category === "eufy_home_tuya") {
-          this.tuya
-            .fetchDps(d.sn)
-            .then((dps) => {
-              if (dps) this.tuyaDpRouter.deliver(d.sn, dps);
-            })
-            .catch((e) => this.reportError(e));
-        }
       } catch (e) {
         this.reportError(e);
       }

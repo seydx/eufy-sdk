@@ -154,6 +154,22 @@ describe("region rules", () => {
     const { c } = client({ fetch: refused });
     await expect(c.fetchSign()).rejects.toThrow("refused: HTTP 401 code 26000 token not exist");
   });
+
+  it("drops the token the gateway echoes into a refused sign's message", async () => {
+    const echoed = "FAKEAUTHTOKEN0000000000000000000000000000";
+    const refused = vi.fn(async () => ({
+      ok: false,
+      status: 401,
+      json: async () => ({ code: 401, msg: `token not exist, token = ${echoed}` }),
+    })) as unknown as typeof fetch;
+    const { c } = client({ authToken: echoed, fetch: refused });
+    const err = await c.fetchSign().then(
+      () => undefined,
+      (e: Error) => e,
+    );
+    expect(err?.message).toContain("refused: HTTP 401 code 401 token not exist");
+    expect(err?.message).not.toContain(echoed);
+  });
 });
 
 describe("socket handshake", () => {

@@ -8,6 +8,7 @@ import {
   type TuyaSession,
 } from "../request.js";
 import { buildSignPreimage, type TuyaSigner } from "../sign.js";
+import { deriveBodyKey, decryptReply } from "../et3.js";
 
 /** Records the preimage it is handed and returns a fixed digest — no native code needed. */
 class SpySigner implements TuyaSigner {
@@ -73,21 +74,23 @@ describe("buildApiParams", () => {
     expect(pre).toContain("clientId=w8x4ppqkdxvqnd73ahj9");
   });
 
-  it("carries postData into the params and folds it in the sign preimage", () => {
+  it("encrypts postData for et=3 and folds the encrypted blob into the sign preimage", () => {
     const signer = new SpySigner();
     const action = buildGetDeviceDpsAction("dev-1");
     const params = buildApiParams(action, { session, signer, time: 1, requestId: "r" });
-    expect(params.postData).toBe(action.postData);
-    // preimage never contains the raw postData json (it is swapMd5-folded)
-    expect(signer.lastPreimage).not.toContain("dpCacheType");
+    // et=3 ships the body encrypted, not the plaintext JSON
+    expect(params.postData).not.toBe(action.postData);
+    expect(JSON.parse(decryptReply(deriveBodyKey("r", null), params.postData))).toEqual(JSON.parse(action.postData!));
+    // preimage never contains the raw postData json (the encrypted blob is swapMd5-folded)
+    expect(signer.lastPreimage).not.toContain("dev-1");
     expect(signer.lastPreimage).toContain("postData=");
   });
 });
 
 describe("dp action builders", () => {
-  it("publishDps: thing.m.device.dp.publish v2.0 with nested stringified dps", () => {
+  it("publishDps: smartlife.m.device.dp.publish v2.0 with nested stringified dps", () => {
     const action = buildPublishDpsAction("dev-1", "gw-1", { "101": true, "102": 50 });
-    expect(action.a).toBe("thing.m.device.dp.publish");
+    expect(action.a).toBe("smartlife.m.device.dp.publish");
     expect(action.v).toBe("2.0");
     expect(JSON.parse(action.postData!)).toEqual({
       gwId: "gw-1",
@@ -96,31 +99,32 @@ describe("dp action builders", () => {
     });
   });
 
-  it("getDeviceDps: thing.m.device.cache.dp.get v2.0", () => {
-    const action = buildGetDeviceDpsAction("dev-1", 1);
-    expect(action.a).toBe("thing.m.device.cache.dp.get");
-    expect(action.v).toBe("2.0");
-    expect(JSON.parse(action.postData!)).toEqual({ devId: "dev-1", dpCacheType: 1 });
+  it("getDeviceDps: smartlife.m.device.dp.get v1.0", () => {
+    const action = buildGetDeviceDpsAction("dev-1");
+    expect(action.a).toBe("smartlife.m.device.dp.get");
+    expect(action.v).toBe("1.0");
+    expect(JSON.parse(action.postData!)).toEqual({ devId: "dev-1" });
   });
 
   it("login action builders shape their postData", () => {
     // step 1: username.token.get
-    const step1 = buildUsernameTokenGetAction("44", "eufyhome-42");
+    const step1 = buildUsernameTokenGetAction("44", "eh-42");
     expect(step1.a).toBe("smartlife.m.user.username.token.get");
     expect(step1.v).toBe("2.0");
-    expect(JSON.parse(step1.postData!)).toEqual({ countryCode: "44", username: "eufyhome-42", isUid: true });
+    expect(JSON.parse(step1.postData!)).toEqual({ countryCode: "44", username: "eh-42", isUid: true });
 
     // step 2: password.login.reg
-    const step2 = buildPasswordLoginRegAction("44", "eufyhome-42", "PW", "TOK");
+    const step2 = buildPasswordLoginRegAction("44", "eh-42", "PW", "TOK");
     expect(step2.a).toBe("smartlife.m.user.uid.password.login.reg");
     expect(step2.v).toBe("1.0");
     expect(JSON.parse(step2.postData!)).toEqual({
       countryCode: "44",
-      uid: "eufyhome-42",
+      uid: "eh-42",
       passwd: "PW",
       token: "TOK",
       ifencrypt: 1,
       createGroup: true,
+      options: '{"group": 1}',
     });
   });
 });

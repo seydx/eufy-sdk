@@ -352,8 +352,9 @@ export class MqttCommandRouter {
    * One exception is known: a single garage unit whose own-cert SUBSCRIBE was denied on every candidate
    * while a phone-extracted cert granted on the same one, with a sibling of the same model on the same
    * account granting fine. That is a per-device authorization gap on the vendor's backend, not a
-   * broker-instance problem and not something this SDK works around — such a device reports as offline
-   * (the throw below) until the backend grants the account's own credentials.
+   * broker-instance problem and not something this SDK works around — the throw below names each
+   * candidate's outcome (its SUBACK deny code, a timeout or a connection error) until the backend grants
+   * the account's own credentials.
    *
    * One fresh, explicitly non-reconnecting (`reconnectPeriod: 0`) connection per call — it repays the
    * full mTLS handshake every command and tears the socket down right after (see
@@ -388,7 +389,14 @@ export class MqttCommandRouter {
     if (!winner) {
       throw new Error(
         `ensureSecurityMqttFor(${dev.sn}): no broker instance currently holds this device's session ` +
-          `(probed ${results.length} candidate IPs, all denied/unreachable) — the device may be offline.`,
+          `(probed ${results.length} candidate IPs: ` +
+          results
+            .map(
+              (r) =>
+                `${r.ip} ${r.grantedQos === undefined ? "" : `SUBACK 0x${r.grantedQos.toString(16)} `}${r.error ?? "denied"}`,
+            )
+            .join("; ") +
+          `).`,
       );
     }
     const m = new SecureMqtt({

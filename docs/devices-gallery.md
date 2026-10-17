@@ -3,10 +3,41 @@ import { ref, watch, onMounted } from "vue";
 
 const q = ref("");
 const noResults = ref(false);
+const view = ref("photo");
 
-// Tiles are static HTML (not a v-for), so filter the rendered DOM directly: match each figure's
-// caption + model code + img alt, hide non-matches, then collapse any section (its <h3> + grid) that
-// ends up empty.
+// Model code (uppercase) → built URL of its line-art icon. Globbed rather than listed, so dropping an
+// SVG into device-icons/ is all it takes, and Vite resolves the URL against the site base.
+const ICONS = Object.fromEntries(
+  Object.entries(
+    import.meta.glob("./device-icons/*.svg", { query: "?url", import: "default", eager: true }),
+  ).map(([path, url]) => [path.slice(path.lastIndexOf("/") + 1, -4).toUpperCase(), url]),
+);
+
+// Show each tile's photo or its icon. A tile's icon is the first of its model codes that has one; a
+// tile with no icon keeps its photo in both views, and a tile with no photo shows its icon in both.
+// The icon is drawn as a mask over the text colour, so the black line art follows the light and dark
+// theme.
+function applyView() {
+  if (typeof document === "undefined") return;
+  document.querySelectorAll(".device-gallery figure").forEach((fig) => {
+    const img = fig.querySelector("img");
+    const codes = (fig.querySelector(".model")?.textContent ?? "").split("·").map((c) => c.trim().toUpperCase());
+    const icon = codes.map((c) => ICONS[c]).find(Boolean);
+    let tile = fig.querySelector(".device-icon");
+    if (icon && !tile) {
+      tile = document.createElement("span");
+      tile.className = "device-icon";
+      tile.setAttribute("role", "img");
+      tile.setAttribute("aria-label", fig.textContent.trim());
+      tile.style.setProperty("--icon", `url("${icon}")`);
+      fig.prepend(tile);
+    }
+    const useIcon = !!tile && (view.value === "icon" || !img);
+    if (img) img.hidden = useIcon;
+    if (tile) tile.hidden = !useIcon;
+  });
+}
+
 function apply() {
   if (typeof document === "undefined") return;
   const term = q.value.trim().toLowerCase();
@@ -28,8 +59,12 @@ function apply() {
   noResults.value = !!term && !anyAtAll;
 }
 
-onMounted(apply);
+onMounted(() => {
+  apply();
+  applyView();
+});
 watch(q, apply);
+watch(view, applyView);
 </script>
 
 # Devices
@@ -67,6 +102,10 @@ from its reported capabilities. See [Devices & capabilities](/devices) for how r
     placeholder="Filter devices — name or model (e.g. C24, T8410, doorbell)"
     aria-label="Filter devices by name or model code"
   />
+  <div class="device-view" role="group" aria-label="Show devices as">
+    <button type="button" :aria-pressed="view === 'photo'" @click="view = 'photo'">Photo</button>
+    <button type="button" :aria-pressed="view === 'icon'" @click="view = 'icon'">Icon</button>
+  </div>
 </div>
 
 <p v-show="noResults" class="device-search-empty">No device matches — try a model code (<code>T8410</code>) or a name (<code>doorbell</code>).</p>
@@ -117,6 +156,9 @@ from its reported capabilities. See [Devices & capabilities](/devices) for how r
   <figcaption>Wired Doorbell <span class="model">T8201</span></figcaption>
 </figure>
 <figure>
+  <figcaption>Wired Doorbell 2K Pro <span class="model">T8202</span></figcaption>
+</figure>
+<figure>
   <img src="/devices/security/security-T8203.webp" alt="Wired Doorbell Dual T8203" loading="lazy" />
   <figcaption>Wired Doorbell Dual <span class="model">T8203</span></figcaption>
 </figure>
@@ -133,8 +175,20 @@ from its reported capabilities. See [Devices & capabilities](/devices) for how r
   <figcaption>Battery Doorbell E340 <span class="model">T8214</span></figcaption>
 </figure>
 <figure>
+  <figcaption>Battery Doorbell Slim <span class="model">T8220</span></figcaption>
+</figure>
+<figure>
+  <figcaption>Battery Doorbell 2E <span class="model">T8221</span></figcaption>
+</figure>
+<figure>
   <img src="/devices/security/security-T8222.webp" alt="Battery Doorbell T8222" loading="lazy" />
   <figcaption>Battery Doorbell <span class="model">T8222</span></figcaption>
+</figure>
+<figure>
+  <figcaption>Doorbell C31 <span class="model">T8223</span></figcaption>
+</figure>
+<figure>
+  <figcaption>Battery Doorbell C30 <span class="model">T8224</span></figcaption>
 </figure>
 
 </div>
@@ -158,6 +212,9 @@ from its reported capabilities. See [Devices & capabilities](/devices) for how r
 <figure>
   <img src="/devices/security/security-T8425.webp" alt="Floodlight Cam E340 T8425" loading="lazy" />
   <figcaption>Floodlight Cam E340 <span class="model">T8425</span></figcaption>
+</figure>
+<figure>
+  <figcaption>Floodlight Cam E30 <span class="model">T8426</span></figcaption>
 </figure>
 
 </div>
@@ -207,8 +264,11 @@ from its reported capabilities. See [Devices & capabilities](/devices) for how r
   <figcaption>eufyCam 2 Pro <span class="model">T8140</span></figcaption>
 </figure>
 <figure>
-  <img src="/devices/security/security-T8141.webp" alt="eufyCam 2C Pro T8141" loading="lazy" />
-  <figcaption>eufyCam 2C Pro <span class="model">T8141</span></figcaption>
+  <img src="/devices/security/security-T8141.webp" alt="eufyCam 2C Pro T8141 · T8142 · T8142-Z" loading="lazy" />
+  <figcaption>eufyCam 2C Pro <span class="model">T8141 · T8142 · T8142-Z</span></figcaption>
+</figure>
+<figure>
+  <figcaption>eufyCam E40 <span class="model">T8144</span></figcaption>
 </figure>
 <figure>
   <img src="/devices/security/security-T8150.webp" alt="4G Starlight Cam T8150 · T8151 · T8152 · T8153" loading="lazy" />
@@ -223,8 +283,8 @@ from its reported capabilities. See [Devices & capabilities](/devices) for how r
   <figcaption>eufyCam S300 (3C) <span class="model">T8161</span></figcaption>
 </figure>
 <figure>
-  <img src="/devices/security/security-T8162.webp" alt="eufyCam S3 Pro T8162" loading="lazy" />
-  <figcaption>eufyCam S3 Pro <span class="model">T8162</span></figcaption>
+  <img src="/devices/security/security-T8162.webp" alt="eufyCam S3 Pro T8162 · T8892 · T8894" loading="lazy" />
+  <figcaption>eufyCam S3 Pro <span class="model">T8162 · T8892 · T8894</span></figcaption>
 </figure>
 <figure>
   <img src="/devices/security/security-T8170.webp" alt="SoloCam S340 T8170" loading="lazy" />
@@ -279,6 +339,9 @@ from its reported capabilities. See [Devices & capabilities](/devices) for how r
   <figcaption>Wall Light Cam S120 <span class="model">T84A0</span></figcaption>
 </figure>
 <figure>
+  <figcaption>Solar Wall Light Cam S120 <span class="model">T81A0</span></figcaption>
+</figure>
+<figure>
   <img src="/devices/security/security-T84A1.webp" alt="Wall Light Cam S100 T84A1" loading="lazy" />
   <figcaption>Wall Light Cam S100 <span class="model">T84A1</span></figcaption>
 </figure>
@@ -299,8 +362,8 @@ from its reported capabilities. See [Devices & capabilities](/devices) for how r
   <figcaption>PoE Bullet PTZ Cam S4 <span class="model">T8E00</span></figcaption>
 </figure>
 <figure>
-  <img src="/devices/security/security-T8W11C.webp" alt="Indoor Cam C220 T8W11C · T8419N" loading="lazy" />
-  <figcaption>Indoor Cam C220 <span class="model">T8W11C · T8419N</span></figcaption>
+  <img src="/devices/security/security-T8W11C.webp" alt="Indoor Cam C220 T8W11 · T8W11C · T8419N" loading="lazy" />
+  <figcaption>Indoor Cam C220 <span class="model">T8W11 · T8W11C · T8419N</span></figcaption>
 </figure>
 <figure>
   <img src="/devices/security/security-T8401.webp" alt="Solo Indoor Cam C22 T8401" loading="lazy" />
@@ -750,10 +813,13 @@ one model.
 
 <style>
 .device-search {
+  display: flex;
+  gap: 10px;
   margin: 18px 0 4px;
 }
 .device-search input {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   padding: 10px 14px;
   font-size: 15px;
   color: var(--vp-c-text-1);
@@ -765,6 +831,24 @@ one model.
 }
 .device-search input:focus {
   border-color: var(--vp-c-brand-1);
+}
+.device-view {
+  display: flex;
+  flex-shrink: 0;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.device-view button {
+  padding: 0 14px;
+  font-size: 14px;
+  color: var(--vp-c-text-2);
+  background: var(--vp-c-bg-soft);
+  transition: color 0.2s, background 0.2s;
+}
+.device-view button[aria-pressed="true"] {
+  color: var(--vp-c-white);
+  background: var(--vp-c-brand-1);
 }
 .device-search-empty {
   color: var(--vp-c-text-2);
@@ -781,6 +865,17 @@ one model.
   width: 100%; height: 130px; object-fit: contain;
   background: var(--vp-c-bg-soft); border: 1px solid var(--vp-c-divider);
   border-radius: 10px; padding: 10px;
+}
+.device-icon {
+  display: block; height: 130px; margin: 16px 0;
+  background: var(--vp-c-bg-soft); border: 1px solid var(--vp-c-divider);
+  border-radius: 10px;
+}
+.device-gallery [hidden] { display: none; }
+.device-icon::before {
+  content: ""; display: block; height: calc(100% - 44px); margin: 22px;
+  background: var(--vp-c-text-1);
+  mask: var(--icon) center / contain no-repeat;
 }
 .device-gallery figcaption {
   margin-top: 8px; font-size: 13px; line-height: 1.3; color: var(--vp-c-text-1);

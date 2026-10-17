@@ -62,4 +62,16 @@ describe("probeBrokerInstance", () => {
     expect(typeof opts.checkServerIdentity).toBe("function");
     expect(opts.ca).toBe(CREDS.aws_root_ca1_pem);
   });
+
+  it("records a denied SUBACK's return code, which mqtt.js reports as an error beside the SUBACK", async () => {
+    const p = probeBrokerInstance("198.51.100.7", CREDS, { clientId: "probe-1", topic: "a/res" });
+    const client = await nextClient(fakeClients);
+    client.subscribe.mockImplementationOnce(
+      (topic: string, _opts: unknown, cb: (e: Error | null, g: unknown, packet: unknown) => void) =>
+        cb(new Error("Subscribe error: Unspecified error"), [{ topic, qos: 1 }], { cmd: "suback", granted: [0x80] }),
+    );
+    client.emit("connect");
+
+    expect(await p).toMatchObject({ granted: false, grantedQos: 0x80, error: "Subscribe error: Unspecified error" });
+  });
 });

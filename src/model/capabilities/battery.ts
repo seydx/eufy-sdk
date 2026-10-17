@@ -139,7 +139,7 @@ function recordSetting(param: number, value: number, ctx: CommandContext): Comma
  *
  * It is also a STATIC fact about a model, not a live reading of what is powering the device. Nothing
  * here handles a unit whose supply can change — a camera moved onto a battery base, say. Moot for these
- * three, which have no cell to charge, and stated because the shape of the guard does not say so.
+ * models, which have no cell to charge, and stated because the shape of the guard does not say so.
  *
  * An explicit list, NOT a `device-family.ts` predicate (`isFloodLight`/`isIndoorCamera`): composing
  * those would over-reach — not every floodlight or indoor cam is mains-only, and this must assert mains
@@ -152,12 +152,14 @@ function recordSetting(param: number, value: number, ctx: CommandContext): Comma
  * family (T81A0/T84A1/T86P2, from its OTA-type switch) and a standalone unit was reported (issue #191)
  * with its live stream cut every ~57 s by the battery budget it cannot need. T8423 (Floodlight Cam 2
  * Pro) has no battery and requires constant 110–240 V power according to the vendor's product FAQ;
- * the exact sentinel values it reports are unverified.
+ * the exact sentinel values it reports are unverified. T8E00 (PoE S4) and T8P00 (PoE E40) are
+ * PoE-powered cameras behind a T8N00 with no cell; a hardware run in #437 showed the S4 stream cut
+ * 55 s after its first video frame by the inherited battery budget (45 s plus 10 s grace).
  *
  * The same list decides the live-media and P2P-session power tier through {@link cameraPowerTier}: a
  * budget on a mains camera is not cheap once it kills a continuous stream every minute.
  */
-const MAINS_CAMERA_MODELS = ["T8425", "T8419", "T8410", "T84A1", "T8423"] as const;
+const MAINS_CAMERA_MODELS = ["T8425", "T8419", "T8410", "T84A1", "T8423", "T8E00", "T8P00"] as const;
 
 /**
  * Power tier of a camera for its live-media budget and standalone P2P session: `"battery"` only when it

@@ -100,9 +100,6 @@ export function subscribeTopics(device: EufyDevice): readonly string[] {
     return [`cmd/${base}/app/res`, `cmd/${base}/res`, `synq/${base}/state_info`, `cmd/${base}/app/ota/res`];
   }
   if (device.deviceClass === "vacuum" || device.deviceClass === "mower") {
-    // eufy_home_tuya devices deliberately use the eufy_home prefix — they share the same MQTT
-    // broker and topic structure as AIoT clean-line devices; the category difference only affects
-    // how the payload is decoded downstream, not which topics the device publishes to.
     const base = `${EUFY_HOME}/${device.model}/${device.sn}`;
     return [`cmd/${base}/res`, `biz/${base}/res`, `biz/${base}/req`, `dt/${base}/param_info`];
   }

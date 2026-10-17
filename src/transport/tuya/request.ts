@@ -2,13 +2,15 @@
  * Tuya / Thingclips `api.json` request assembly + transport.
  *
  * Every call is a single `POST https://a1.tuyaeu.com/api.json` (EU) whose body is
- * **form-urlencoded plaintext params** (NOT an encrypted blob) plus a `sign`. This module builds
- * that param map for a given action, form-encodes it, POSTs it, and parses Tuya's response
- * envelope. The one non-plaintext piece — the `sign` digest — is delegated to a {@link TuyaSigner}.
+ * **form-urlencoded params** plus a `sign`. Under `et=3` the `postData` param is an AES-128-GCM blob
+ * and the reply `result` is encrypted the same way, with the same per-request key. This module builds
+ * that param map for a given action, form-encodes it, POSTs it, and parses Tuya's response envelope.
+ * The `sign` digest is delegated to a {@link TuyaSigner}.
  */
 /** Injectable POST transport — takes (url, form-body), returns the parsed JSON envelope. Native `fetch` by default. */
 export type TuyaHttpPost = (url: string, body: string) => Promise<unknown>;
 import { buildSignPreimage, type TuyaSigner } from "./sign.js";
+import { deriveBodyKey, encryptBody } from "./et3.js";
 import { randomUUID } from "node:crypto";
 
 /** EU api.json endpoint. (Other regions swap the `tuyaeu` shard, e.g. `tuyaus`/`tuyacn`.) */
@@ -31,7 +33,10 @@ export const TUYA_APP_VERSION = "6.0.51_26722";
 
 /** A single action to call: the `a` (action) + `v` (version) + optional pre-serialized `postData`. */
 export interface TuyaAction {
-  /** Action name, e.g. `thing.m.device.dp.publish`. */
+  /**
+   * Action name as it goes on the wire, e.g. `smartlife.m.device.dp.publish`. The vendor SDK names
+   * its actions `thing.*` and rewrites a leading `thing` to `smartlife` before sending.
+   */
   a: string;
   /** Per-action version, e.g. `"1.0"` / `"2.0"`. */
   v: string;
@@ -51,6 +56,11 @@ export interface TuyaSession {
    * `"7cbfe6d8"` for this app's appId. Hardcode it.
    */
   chKey: string;
+  /**
+   * Per-login encryption code (`User.ecode`), read from the decrypted `login.reg` reply. Absent until
+   * login completes; it keys et=3 body encryption and reply decryption for every session call.
+   */
+  ecode?: string;
 }
 
 /**
@@ -155,7 +165,12 @@ export function buildApiParams(action: TuyaAction, opts: BuildRequestOptions): R
     nd: env.nd,
     deviceCoreVersion: env.deviceCoreVersion,
   };
-  if (action.postData !== undefined) params.postData = action.postData;
+  if (action.postData !== undefined) {
+    params.postData =
+      env.et === "3"
+        ? encryptBody(deriveBodyKey(params.requestId, opts.session.ecode ?? null), action.postData)
+        : action.postData;
+  }
 
   const sign = opts.signer.sign(buildSignPreimage(params));
   return { ...params, sign };
@@ -209,25 +224,25 @@ export async function sendApiRequest<T = unknown>(
 
 /**
  * CONTROL: publish device data-points. `dps` is `{ "<dpId>": <value> }`; note it is JSON-stringified
- * INSIDE the postData (Tuya nests the dps map as a string). Action `thing.m.device.dp.publish` v2.0.
+ * INSIDE the postData (Tuya nests the dps map as a string). Action `smartlife.m.device.dp.publish` v2.0.
  */
 export function buildPublishDpsAction(devId: string, gwId: string, dps: Record<string, unknown>): TuyaAction {
   return {
-    a: "thing.m.device.dp.publish",
+    a: "smartlife.m.device.dp.publish",
     v: "2.0",
     postData: JSON.stringify({ gwId, devId, dps: JSON.stringify(dps) }),
   };
 }
 
 /**
- * READ/dump: fetch a device's cached data-points. Action `thing.m.device.cache.dp.get` v2.0.
- * TODO(verify): `dpCacheType` default (1) was not pinned from the capture.
+ * READ: a device's current data-points. Action `smartlife.m.device.dp.get` v1.0, postData `{ devId }`.
+ * The reply `result` is a flat `{ "<dpId>": value }` map.
  */
-export function buildGetDeviceDpsAction(devId: string, dpCacheType = 1): TuyaAction {
+export function buildGetDeviceDpsAction(devId: string): TuyaAction {
   return {
-    a: "thing.m.device.cache.dp.get",
-    v: "2.0",
-    postData: JSON.stringify({ devId, dpCacheType }),
+    a: "smartlife.m.device.dp.get",
+    v: "1.0",
+    postData: JSON.stringify({ devId }),
   };
 }
 
@@ -249,6 +264,7 @@ export function buildUsernameTokenGetAction(countryCode: string, username: strin
  * LOGIN step 2: uid password login + auto-register.
  * Wire-confirmed from the eufy Security app: wire action
  * `smartlife.m.user.uid.password.login.reg`, v=1.0. `passwd` = hex of RSA-PKCS1-encrypt(MD5hex(aesPassword)).
+ * `options` is the JSON string `{"group": 1}`, as the app sends it.
  * On success returns `{ sid, uid }`.
  */
 export function buildPasswordLoginRegAction(
@@ -260,7 +276,15 @@ export function buildPasswordLoginRegAction(
   return {
     a: "smartlife.m.user.uid.password.login.reg",
     v: "1.0",
-    postData: JSON.stringify({ countryCode, uid, passwd, token, ifencrypt: 1, createGroup: true }),
+    postData: JSON.stringify({
+      countryCode,
+      uid,
+      passwd,
+      token,
+      ifencrypt: 1,
+      createGroup: true,
+      options: '{"group": 1}',
+    }),
   };
 }
 

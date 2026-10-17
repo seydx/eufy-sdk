@@ -1,11 +1,15 @@
 /**
  * V2 `v2_eufysecurity:` push-thumbnail decoder — keyless.
  *
- * The v2 format is NOT end-to-end encrypted and needs NO key: it is *head-only obfuscation*. Only a
- * fixed JPEG prefix (SOI + APP0 + the two quantization tables + the SOF dimensions + the luma Huffman
- * tables) is encrypted; everything from the standard DC-chrominance Huffman table (`FF C4 00 1F 01`)
- * onward — the chroma DHTs, the SOS and the entire entropy-coded scan — is left as plaintext standard
- * JPEG. So we reconstruct a viewable image by splicing a freshly built standard JPEG header (correct
+ * The v2 format is NOT end-to-end encrypted and needs NO key: it is *head-only obfuscation*. A JPEG
+ * prefix is encrypted and the rest is left as plaintext standard JPEG, in one of two cuts:
+ *   - the prefix is SOI + APP0 + the two quantization tables + the SOF dimensions + the luma Huffman
+ *     tables, and the plaintext tail starts at the standard DC-chrominance Huffman table
+ *     (`FF C4 00 1F 01`) — the chroma DHTs, the SOS and the entire entropy-coded scan;
+ *   - the prefix also covers the chroma Huffman tables, and the plaintext tail starts at a DRI segment
+ *     (`FF DD 00 04`) directly in front of the 3-component SOS header and the scan. The standard
+ *     Annex-K chroma tables are put back in front of that tail, which makes it the first form.
+ * So we reconstruct a viewable image by splicing a freshly built standard JPEG header (correct
  * width/height/chroma-subsampling) onto that plaintext tail.
  *
  * Three unknowns live in the encrypted prefix and are recovered from the scan itself:
@@ -52,8 +56,13 @@ import { decode as jpegDecode } from "jpeg-js";
 /** The `v2_eufysecurity:` wrapper prefix (including the trailing colon) that tags a v2 blob. */
 const V2_PREFIX = "v2_eufysecurity:";
 
-/** The standard baseline DC-chrominance Huffman marker — the first plaintext byte of the v2 tail. */
-const DC_CHROMA = Buffer.from([0xff, 0xc4, 0x00, 0x1f, 0x01]);
+/**
+ * The plaintext start of a v2 blob whose chroma Huffman tables are encrypted too: a DRI segment (`FF DD`,
+ * length 4, then two interval bytes) directly in front of the SOS header of a 3-component scan (`FF DA`,
+ * length 12).
+ */
+const DRI_SEGMENT = Buffer.from([0xff, 0xdd, 0x00, 0x04]);
+const SOS_HEADER = Buffer.from([0xff, 0xda, 0x00, 0x0c, 0x03]);
 
 /** Zig-zag scan order — DQT segments store the 8×8 quant table in this order. */
 const ZIGZAG = [
@@ -82,8 +91,8 @@ const QUANT_CHROMA = [
 ];
 
 /**
- * The standard DC-luma Huffman table (Annex K.3), as a complete DHT segment. The chroma DHTs come from
- * the plaintext tail, so only the luma tables belong in the reconstructed header.
+ * The standard DC-luma Huffman table (Annex K.3), as a complete DHT segment. The chroma DHTs are part
+ * of the plaintext tail (see `plaintextTail`), so only the luma tables belong in the reconstructed header.
  */
 const DHT_DC_LUMA = Buffer.from("ffc4001f0000010501010101010100000000000000000102030405060708090a0b", "hex");
 
@@ -93,6 +102,21 @@ const DHT_AC_LUMA = Buffer.from(
     "1552d1f02433627282090a161718191a25262728292a3435363738393a434445464748494a535455565758595a636465666768" +
     "696a737475767778797a838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7" +
     "c8c9cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9fa",
+  "hex",
+);
+
+/** The standard DC-chroma Huffman table (Annex K.3, table 1), as a complete DHT segment; see {@link DHT_DC_LUMA}. */
+const DHT_DC_CHROMA = Buffer.from("ffc4001f0100030101010101010101010000000000000102030405060708090a0b", "hex");
+
+/** The standard baseline DC-chrominance Huffman marker — the first plaintext byte of the v2 tail. */
+const DC_CHROMA = DHT_DC_CHROMA.subarray(0, 5);
+
+/** The standard AC-chroma Huffman table (Annex K.3, table 1), as a complete DHT segment; see {@link DHT_DC_LUMA}. */
+const DHT_AC_CHROMA = Buffer.from(
+  "ffc400b51100020102040403040705040400010277000102031104052131061241510761711322328108144291a1b1c1" +
+    "09233352f0156272d10a162434e125f11718191a262728292a35363738393a434445464748494a535455565758595a636465" +
+    "666768696a737475767778797a82838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2" +
+    "c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae2e3e4e5e6e7e8e9eaf2f3f4f5f6f7f8f9fa",
   "hex",
 );
 
@@ -337,6 +361,37 @@ function findGeometry(tail: Buffer): Geometry | null {
   return best;
 }
 
+/**
+ * Where the plaintext DRI + SOS starts in a v2 blob, or -1 when it has none: the DRI segment directly in
+ * front of the last 3-component SOS.
+ *
+ * The last SOS wins: the entropy-coded scan after the real SOS stuffs every `FF` data byte with `00`,
+ * so `FF DA` cannot occur there, and an earlier match can only be encrypted bytes that happen to take
+ * the same shape. A tail cut at the wrong place still fails the geometry search and the probe decode.
+ */
+function findScanCut(data: Buffer): number {
+  const sos = data.lastIndexOf(SOS_HEADER);
+  if (sos < 0) return -1;
+  const dri = sos - DRI_SEGMENT.length - 2;
+  return dri >= 0 && data.subarray(dri, dri + DRI_SEGMENT.length).equals(DRI_SEGMENT) ? dri : -1;
+}
+
+/**
+ * The plaintext tail of a v2 blob, starting at its chroma Huffman tables, or null when it has neither
+ * plaintext start.
+ *
+ * A blob cut at the DC-chroma DHT carries those tables itself and its tail is returned as it is. A blob
+ * cut at the DRI in front of the SOS lost them with the encrypted prefix; the standard Annex-K
+ * chroma DHTs are prepended, which yields the same shape of tail.
+ */
+function plaintextTail(data: Buffer): Buffer | null {
+  const cut = data.indexOf(DC_CHROMA);
+  if (cut >= 0) return data.subarray(cut);
+  const scan = findScanCut(data);
+  if (scan < 0) return null;
+  return Buffer.concat([DHT_DC_CHROMA, DHT_AC_CHROMA, data.subarray(scan)]);
+}
+
 /** True if the blob is a v2 `v2_eufysecurity:` push thumbnail. */
 export function isV2Image(data: Buffer): boolean {
   return data.length >= V2_PREFIX.length && data.subarray(0, V2_PREFIX.length).toString("latin1") === V2_PREFIX;
@@ -354,9 +409,8 @@ export function isV2Image(data: Buffer): boolean {
  */
 export function decodeImageV2(data: Buffer): Buffer | null {
   if (!isV2Image(data)) return null;
-  const cut = data.indexOf(DC_CHROMA);
-  if (cut < 0) return null;
-  const tail = data.subarray(cut);
+  const tail = plaintextTail(data);
+  if (!tail) return null;
 
   const geometry = findGeometry(tail);
   if (!geometry) return null;

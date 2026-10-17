@@ -299,4 +299,12 @@ describe("RtcSession", () => {
     expect(s.session.sendRaw(Buffer.from("k"))).toBe(true);
     expect(s.peer.sendRaw).toHaveBeenCalledWith(Buffer.from("k"));
   });
+
+  it("forwards the peer's keepalive echo as keepaliveEcho", async () => {
+    const s = await authenticated(setup());
+    const echoes = vi.fn();
+    s.session.on("keepaliveEcho", echoes);
+    s.peer.emit("keepaliveEcho");
+    expect(echoes).toHaveBeenCalledTimes(1);
+  });
 });

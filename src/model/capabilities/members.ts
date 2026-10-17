@@ -630,6 +630,9 @@ export function propertiesOf(members: Members, ctx?: AvailabilityContext): Prope
         raw: m.decode ? true : undefined,
         readAliases: aliases?.slice(promoted ? 1 : 0).map(({ paramType, invert }) => ({ paramType, invert })),
         writable: m.write !== undefined || m.writtenElsewhere === true,
+        reported: ctx?.paramIds
+          ? wasReported(m, borrowedBy(m, members), { ...ctx, paramIds: ctx.paramIds })
+          : undefined,
         description: m.description,
       },
     ];
@@ -839,9 +842,28 @@ function reads(
   m: Pick<ValueMember, "param" | "realtime" | "readAvailable" | "readAliases">,
   ctx: CommandContext,
 ): boolean {
-  if (m.realtime === true) return true;
+  return m.realtime === true || sent(m, ctx);
+}
+
+/** Whether the device sent a member's own param or one of its read aliases. */
+function sent(
+  m: Pick<ValueMember, "param" | "readAvailable" | "readAliases">,
+  ctx: AvailabilityContext & { readonly paramIds: ReadonlySet<number> },
+): boolean {
   if ((!m.readAvailable || m.readAvailable(ctx)) && m.param !== undefined && ctx.paramIds.has(m.param)) return true;
   return m.readAliases?.some((a) => (!a.available || a.available(ctx)) && ctx.paramIds.has(a.paramType)) === true;
+}
+
+/**
+ * Whether the device has reported a member's value: its own param, a read alias, or the payload it reads
+ * from. Unlike {@link reads}, a `realtime` member counts only once its value has arrived.
+ */
+function wasReported(
+  m: Pick<ValueMember, "param" | "readAvailable" | "readAliases">,
+  from: { param: number } | undefined,
+  ctx: AvailabilityContext & { readonly paramIds: ReadonlySet<number> },
+): boolean {
+  return sent(m, ctx) || (from !== undefined && ctx.paramIds.has(from.param));
 }
 
 /**
@@ -918,9 +940,8 @@ export function bindMembers<M extends Members>(members: M, deps: MemberDeps): Su
     // One availability decision across getter, setter and manifest: a member gated off by `available`
     // for this device is not exposed as a getter either (the manifest already omits it).
     const available = !m.available || m.available(ctx);
-    // Either wire is evidence: the member's own param where it has one, or the owner's payload that
-    // carries the same value on the other device family.
-    const reported = available && (reads(m, ctx) || (from !== undefined && ctx.paramIds.has(from.param)));
+    // The getter gate is the manifest's `reported`, plus the realtime opt-out (see `wasReported`).
+    const reported = available && (m.realtime === true || wasReported(m, from, ctx));
     if (reported && !m.writeOnly && !m.unexposed) {
       const decode = m.decode;
       // The member's own wire wins; the owner's payload is the fallback for a device that does not

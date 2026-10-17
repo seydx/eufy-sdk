@@ -19,6 +19,8 @@ import type { LiveVideoFrame } from "../../core/contracts.js";
 export interface ReadableEgressOptions {
   /** Emit {@link LiveVideoFrame} objects instead of raw Annex-B bytes (default false = bytes). */
   objectMode?: boolean;
+  /** Yield ReceivedVideoFrame envelopes with original source-arrival times; ignored in raw mode. */
+  arrivalTime?: boolean;
   /** Readable highWaterMark (bytes, or object count in objectMode). */
   highWaterMark?: number;
 }
@@ -26,6 +28,8 @@ export interface ReadableEgressOptions {
 /**
  * Wrap a shared-source {@link Consumer} in a fresh Readable. The consumer is detached when the
  * Readable is destroyed/ended, so callers own the lifetime by owning the stream.
+ * Frames arrive through onMedia; an empty video listener releases the keyframe-prime
+ * because ConsumerImpl replays it when the first video listener is added.
  */
 export function openReadableFromConsumer(consumer: Consumer, opts: ReadableEgressOptions = {}): Readable {
   const objectMode = opts.objectMode ?? false;
@@ -43,13 +47,16 @@ export function openReadableFromConsumer(consumer: Consumer, opts: ReadableEgres
     },
   });
 
-  const onVideo = (frame: LiveVideoFrame) => {
-    // push() returns false when the internal buffer is full — pause the consumer so its bounded
-    // queue (and drop-to-keyframe) takes over until the next read() resumes us.
-    const ok = readable.push(objectMode ? frame : frame.data);
-    if (!ok) consumer.pause();
-  };
-  consumer.on("video", onVideo);
+  consumer.onMedia((item) => {
+    if (item.kind !== "video") return;
+    const value = objectMode
+      ? opts.arrivalTime
+        ? { frame: item.frame, timestampMs: item.timestampMs }
+        : item.frame
+      : item.frame.data;
+    if (!readable.push(value)) consumer.pause();
+  });
+  consumer.on("video", () => {});
 
   consumer.on("stop", () => readable.push(null)); // upstream ended → EOF
   consumer.on("error", (err: Error) => readable.destroy(err));

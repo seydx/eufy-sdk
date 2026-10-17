@@ -63,7 +63,8 @@ export class Fmp4Muxer {
   private baseDecodeTime = 0; // running decode time (ticks) for tfdt
   private fragTicks = 0; // ticks accumulated in the open fragment
   private samples: Sample[] = [];
-  private lastVideoTimestampMs?: number;
+  /** Ticks from the first video sample's start to the newest sample's end, at its provisional duration. */
+  private videoTicks = 0;
   private readonly audioRequested: boolean;
   private audioCodec?: AacCodec;
   /** Decoder config of an AAC-ELD track, taken from its frames; absent for AAC-LC, whose `esds` config is fixed. */
@@ -89,6 +90,10 @@ export class Fmp4Muxer {
    * Push one access unit. Returns any completed segments: the `init` on the first keyframe, and/or a
    * media fragment when this frame closed the open one. Returns `undefined` if nothing is emitted yet
    * (e.g. delta frames before the first keyframe).
+   *
+   * A sample lasts until the next frame's `timestampMs`, measured from the first keyframe's, so the video
+   * timeline follows the arrival clock; a frame that shares the previous one's timestamp leaves that
+   * sample one tick long, and the next frame's duration absorbs the difference.
    */
   push(frame: LiveVideoFrame, timestampMs = now()): MediaFragment | undefined {
     if (frame.codec === "av1") throw new Error("fMP4 muxer: AV1 is not supported");
@@ -106,15 +111,14 @@ export class Fmp4Muxer {
       this.firstVideoTimestampMs = timestampMs;
     }
 
-    if (this.lastVideoTimestampMs !== undefined && this.samples.length) {
-      const measured = Math.round((timestampMs - this.lastVideoTimestampMs) * (TIMESCALE / 1000));
-      if (measured > 0) {
-        const previous = this.samples[this.samples.length - 1];
-        this.fragTicks += measured - previous.duration;
-        previous.duration = measured;
-      }
+    if (this.firstVideoTimestampMs !== undefined && this.samples.length) {
+      const previous = this.samples[this.samples.length - 1];
+      const arrival = Math.round((timestampMs - this.firstVideoTimestampMs) * (TIMESCALE / 1000));
+      const duration = Math.max(1, arrival - (this.videoTicks - previous.duration));
+      this.fragTicks += duration - previous.duration;
+      this.videoTicks += duration - previous.duration;
+      previous.duration = duration;
     }
-    this.lastVideoTimestampMs = timestampMs;
 
     let fragment: Buffer | undefined;
     // Boundary: a keyframe that opens a fragment past the minimum length closes the current one first.
@@ -129,6 +133,7 @@ export class Fmp4Muxer {
 
     this.samples.push({ data: annexbToAvcc(frame.data), duration: this.firstDuration, keyframe: frame.keyframe });
     this.fragTicks += this.firstDuration;
+    this.videoTicks += this.firstDuration;
 
     if (!this.initSent && (!this.audioRequested || this.audioCodec || this.audioDisabled)) {
       init = this.buildInit();

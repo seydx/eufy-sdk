@@ -234,6 +234,18 @@ describe("Fmp4Muxer audio", () => {
     expect(trun.readUInt32BE(32)).toBe(9000);
   });
 
+  it("keeps the video timeline on the arrival clock when frames share a timestamp", () => {
+    const mux = new Fmp4Muxer({ fragmentSeconds: 1 });
+    for (let second = 0; second < 60; second++) {
+      const start = 1000 + second * 1000;
+      for (let k = 0; k < 15; k++) {
+        mux.push(k === 0 ? kf("h264") : delta("h264"), start + Math.min(k, 13) * 70);
+      }
+    }
+    const out = mux.push(kf("h264"), 61000)!;
+    expect(boxesOfType(out.data, "tfdt")[0].readBigUInt64BE(12)).toBe(59n * 90000n);
+  });
+
   it("aligns audio decode time and preserves a missing-frame gap from capture timestamps", () => {
     const mux = new Fmp4Muxer({ audio: true, fragmentSeconds: 0 });
     mux.push(kf("h264"), 1000);

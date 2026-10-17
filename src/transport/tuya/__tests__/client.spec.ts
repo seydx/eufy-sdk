@@ -1,7 +1,14 @@
-import { generateKeyPairSync } from "node:crypto";
+import { createCipheriv, generateKeyPairSync } from "node:crypto";
 import { TuyaClient, genDeviceId } from "../client.js";
+import { deriveBodyKey, decryptReply } from "../et3.js";
 import type { TuyaSigner } from "../sign.js";
 import type { TuyaHttpPost } from "../request.js";
+
+/** Decrypt the et=3-encrypted `postData` a request actually sent, keyed off its own `requestId`. */
+function sentPostData(body: URLSearchParams): unknown {
+  const reqId = body.get("requestId")!;
+  return JSON.parse(decryptReply(deriveBodyKey(reqId, null), body.get("postData")!));
+}
 
 /** Generate a minimal RSA public key and return its modulus/exponent as decimal strings. */
 function makeTestRsaKey(): { n: string; e: string } {
@@ -59,14 +66,14 @@ describe("TuyaClient", () => {
     expect(params.sign).toBe("f".repeat(64));
   });
 
-  it("getDeviceDps posts the cache.dp.get action", async () => {
-    const { http, calls } = stubHttp([{ success: true, result: { dps: {} } }]);
+  it("getDeviceDps posts the dp.get action", async () => {
+    const { http, calls } = stubHttp([{ success: true, result: {} }]);
     const c = new TuyaClient({ signer: new FixedSigner(), chKey: "7cbfe6d8", http });
     const res = await c.getDeviceDps("dev-1");
     expect(res.success).toBe(true);
     const body = new URLSearchParams(calls[0].body);
-    expect(body.get("a")).toBe("thing.m.device.cache.dp.get");
-    expect(JSON.parse(body.get("postData")!)).toEqual({ devId: "dev-1", dpCacheType: 1 });
+    expect(body.get("a")).toBe("smartlife.m.device.dp.get");
+    expect(sentPostData(body)).toEqual({ devId: "dev-1" });
   });
 
   it("publishDps refuses to send by default (unverified write gate)", async () => {
@@ -81,8 +88,8 @@ describe("TuyaClient", () => {
     const c = new TuyaClient({ signer: new FixedSigner(), chKey: "7cbfe6d8", http });
     await c.publishDps("dev-1", "gw-1", { "101": true }, { allowUnverified: true });
     const body = new URLSearchParams(calls[0].body);
-    expect(body.get("a")).toBe("thing.m.device.dp.publish");
-    expect(JSON.parse(body.get("postData")!)).toEqual({
+    expect(body.get("a")).toBe("smartlife.m.device.dp.publish");
+    expect(sentPostData(body)).toEqual({
       gwId: "gw-1",
       devId: "dev-1",
       dps: JSON.stringify({ "101": true }),
@@ -105,18 +112,18 @@ describe("TuyaClient", () => {
     // step 1 = username.token.get with the derived username
     const step1 = new URLSearchParams(calls[0].body);
     expect(step1.get("a")).toBe("smartlife.m.user.username.token.get");
-    expect(JSON.parse(step1.get("postData")!)).toEqual({
+    expect(sentPostData(step1)).toEqual({
       countryCode: "44",
-      username: "eufyhome-12345",
+      username: "eh-12345",
       isUid: true,
     });
 
     // step 2 = password.login.reg carrying RSA-encrypted password + token
     const step2 = new URLSearchParams(calls[1].body);
     expect(step2.get("a")).toBe("smartlife.m.user.uid.password.login.reg");
-    const pd = JSON.parse(step2.get("postData")!);
+    const pd = sentPostData(step2) as Record<string, unknown>;
     expect(pd.token).toBe("TOK-1");
-    expect(pd.uid).toBe("eufyhome-12345");
+    expect(pd.uid).toBe("eh-12345");
     expect(pd.ifencrypt).toBe(1);
     // passwd = RSA-PKCS1-encrypt(MD5hex(aesPassword)) — non-deterministic, check shape only
     expect(pd.passwd).toMatch(/^[0-9a-f]+$/);
@@ -157,5 +164,51 @@ describe("TuyaClient", () => {
     const { http } = stubHttp([{ success: false, errorMsg: "boom" }]);
     const c = new TuyaClient({ signer: new FixedSigner(), chKey: "7cbfe6d8", http });
     await expect(c.login("12345")).rejects.toThrow(/username.token.get failed: boom/);
+  });
+});
+
+describe("TuyaClient et=3 reply decryption", () => {
+  /** Seal an inner envelope the way the server does, keyed off the request's own requestId + ecode. */
+  function sealFor(requestId: string, ecode: string | null, inner: unknown): { result: string } {
+    const key = deriveBodyKey(requestId, ecode);
+    const nonce = Buffer.alloc(12, 7);
+    const cipher = createCipheriv("aes-128-gcm", key, nonce);
+    const ct = Buffer.concat([cipher.update(Buffer.from(JSON.stringify(inner))), cipher.final()]);
+    return { result: Buffer.concat([nonce, ct, cipher.getAuthTag()]).toString("base64") };
+  }
+
+  it("decrypts an encrypted string result into an object the caller reads", async () => {
+    const http: TuyaHttpPost = async (_url, body) => {
+      const reqId = new URLSearchParams(body).get("requestId")!;
+      return sealFor(reqId, null, { success: true, result: { "8": 100 } });
+    };
+    const c = new TuyaClient({ signer: new FixedSigner(), chKey: "7cbfe6d8", sid: "preset-sid", http });
+    const res = await c.getDeviceDps<Record<string, unknown>>("dev-1");
+    expect(res.success).toBe(true);
+    expect(res.result).toEqual({ "8": 100 });
+  });
+
+  it("login decrypts its replies (null variant), captures ecode, and keys later calls with it", async () => {
+    const { n, e } = makeTestRsaKey();
+    const http: TuyaHttpPost = async (_url, body) => {
+      const p = new URLSearchParams(body);
+      const reqId = p.get("requestId")!;
+      const a = p.get("a");
+      if (a === "smartlife.m.user.username.token.get") {
+        return sealFor(reqId, null, { success: true, result: { token: "T", publicKey: n, exponent: e } });
+      }
+      if (a === "smartlife.m.user.uid.password.login.reg") {
+        return sealFor(reqId, null, { success: true, result: { sid: "sid-1", uid: "uid-1", ecode: "EC-xyz" } });
+      }
+      // A post-login session call must decrypt with the captured ecode, not the null variant.
+      return sealFor(reqId, "EC-xyz", { success: true, result: { "8": 50 } });
+    };
+    const c = new TuyaClient({ signer: new FixedSigner(), chKey: "7cbfe6d8", http });
+    const res = await c.login("12345", "44");
+    expect(res).toEqual({ sid: "sid-1", uid: "uid-1" });
+    expect(c.getSession().ecode).toBe("EC-xyz");
+
+    const dps = await c.getDeviceDps<Record<string, unknown>>("dev-1");
+    expect(dps.result).toEqual({ "8": 50 });
   });
 });

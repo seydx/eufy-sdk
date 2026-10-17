@@ -117,12 +117,12 @@ function coerce(
 
 /**
  * Whether two property manifests are the same for adoption purposes — compared on the fields a device
- * fact can change (name, writability, and the per-model `enumValues`), not the whole spec (its `decode`
- * is a function, and paramType/kind never vary by context).
+ * fact can change (name, writability, whether it was reported, and the per-model `enumValues`), not the
+ * whole spec (its `decode` is a function, and paramType/kind never vary by context).
  */
 function sameManifest(a: readonly PropertySpec[], b: readonly PropertySpec[]): boolean {
   if (a.length !== b.length) return false;
-  const sig = (p: PropertySpec) => JSON.stringify([p.name, p.writable, p.enumValues ?? null]);
+  const sig = (p: PropertySpec) => JSON.stringify([p.name, p.writable, p.reported ?? null, p.enumValues ?? null]);
   const bSigs = new Set(b.map(sig));
   return a.every((p) => bSigs.has(sig(p)));
 }

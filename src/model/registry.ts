@@ -52,6 +52,8 @@ export const MODEL_REGISTRY: Readonly<Record<string, RegistryEntry>> = {
   // Cameras with curated extras that aren't always provable from a fresh device's params.
   T8423: { codec: "camera", caps: ["light", "battery"], name: "Floodlight Cam" },
   T8210: { codec: "camera", caps: ["doorbell", "battery"], name: "Video Doorbell" },
+  // T8210 hardware variant, reported as its own code; shares the T8210 row.
+  T8210C: { codec: "camera", caps: ["doorbell", "battery"], name: "Video Doorbell" },
   // Confirmed against a real owned unit (named "Doorbell"): Video Doorbell Dual.
   T8214: { codec: "camera", caps: ["doorbell", "battery"], name: "Video Doorbell Dual" },
   // Battery Video Doorbell Dual, vendor deviceType 91 (BATTERY_DOORBELL_PLUS), reported by two users.
@@ -77,6 +79,8 @@ export const MODEL_REGISTRY: Readonly<Record<string, RegistryEntry>> = {
   // shows a parent, so an attached cam never advertises the hub's guard mode.
   T8170: { codec: "camera", caps: ["battery", "arming"], name: "SoloCam" },
   T8171: { codec: "camera", caps: ["battery", "arming"], name: "T8171" },
+  // Baby Monitor E21, vendor deviceType 86 (category eufy_care), standalone.
+  T8354: { codec: "camera", name: "Baby Monitor E21" },
   T8400: { codec: "camera", caps: ["arming"], name: "Indoor Cam" },
   T8410: { codec: "camera", caps: ["arming"], name: "Indoor Cam Pan & Tilt" },
   T8442: { codec: "camera", caps: ["arming"], name: "Indoor/Outdoor Cam 1080p" },

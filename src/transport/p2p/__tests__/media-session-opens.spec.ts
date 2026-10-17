@@ -220,4 +220,35 @@ describe("a second live camera on a claimed station session", () => {
     expect(keys).toContain(STATION_SN);
     expect(built).toHaveLength(2);
   });
+  it("keeps independent media delivering when the station-control connection closes", async () => {
+    const r = router();
+    const a = await openLive(r, CAM_A);
+    a.attach();
+    const b = await openLive(r, CAM_B);
+    const consumer = b.attach() as EventEmitter;
+    const delivered = vi.fn();
+    consumer.on("video", delivered);
+    const disposedA = vi.spyOn(a, "dispose");
+    const disposedB = vi.spyOn(b, "dispose");
+    try {
+      await built[0].close();
+      expect(disposedA).toHaveBeenCalledOnce();
+      expect(disposedB).not.toHaveBeenCalled();
+      expect(sources(r).has(`${STATION_SN}:0`)).toBe(false);
+      expect(sources(r).get(`${STATION_SN}:2`)).toBe(b);
+      expect(built[1].isConnected).toBe(true);
+      const frame = {
+        data: Buffer.from("000000016588", "hex"),
+        keyframe: true,
+        codec: "h264",
+        width: 640,
+        height: 480,
+        timestamp: 1,
+      };
+      (b as unknown as { stream: EventEmitter }).stream.emit("video", frame);
+      expect(delivered).toHaveBeenCalledWith(frame);
+    } finally {
+      await r.closeAll();
+    }
+  });
 });

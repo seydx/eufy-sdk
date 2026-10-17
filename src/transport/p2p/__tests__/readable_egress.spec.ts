@@ -1,6 +1,6 @@
 import { openReadableFromConsumer } from "../readable-egress.js";
 import { SharedLiveSource } from "../shared-live-source.js";
-import type { LiveStreamHandle, LiveVideoFrame } from "../../../core/contracts.js";
+import type { LiveStreamHandle, LiveVideoFrame, ReceivedVideoFrame } from "../../../core/contracts.js";
 import { EventEmitter } from "node:events";
 
 class FakeStream extends EventEmitter implements LiveStreamHandle {
@@ -29,6 +29,31 @@ function mk() {
 }
 
 describe("openReadableFromConsumer", () => {
+  it("preserves original arrival time when replaying an aged keyframe", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    const { source, stream } = mk();
+    let reader: ReturnType<typeof openReadableFromConsumer> | undefined;
+    try {
+      const first = source.attach();
+      const original = frame(true);
+      stream().video(original);
+      first.detach();
+      now.mockReturnValue(6_000);
+      reader = openReadableFromConsumer(source.attach(), { objectMode: true, arrivalTime: true });
+      const received: ReceivedVideoFrame[] = [];
+      reader.on("data", (value) => received.push(value));
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(received).toHaveLength(1);
+      expect(received[0].frame).toBe(original);
+      expect(received[0].timestampMs).toBe(1_000);
+      expect(Object.hasOwn(original, "timestampMs")).toBe(false);
+    } finally {
+      reader?.destroy();
+      source.dispose();
+      now.mockRestore();
+    }
+  });
+
   it("streams raw Annex-B bytes by default", async () => {
     const { source, stream } = mk();
     const consumer = source.attach();

@@ -4,11 +4,13 @@ import { LiveSnapshotUnavailableError } from "../../../core/contracts.js";
 import { RtcCommandRouter, type RtcCommandRouterDeps, type RtcLiveRoute, type RtcRoute } from "../command-router.js";
 import type { RtcSession, RtcSessionOptions } from "../session.js";
 import { buildPortalHeader, parsePortalHeader, PortalLinkType, PORTAL_HEADER_LENGTH } from "../portal-packet.js";
+import { PORTAL_KEEPALIVE, PORTAL_KEEPALIVE_MS } from "../portal-keepalive.js";
 
 const PORTAL_CMD_SET_PAYLOAD = 1350;
 const PORTAL_STATION_CHANNEL = 255;
 const ACK_TIMEOUT_MS = 8_000;
 const CONNECT_TIMEOUT_MS = 12_000;
+const IDLE_CLOSE_MS = 60_000;
 
 /** Run `fn` on fake timers, so the router's fixed deadlines can be crossed without waiting them out. */
 async function onFakeTimers(fn: () => Promise<void>): Promise<void> {
@@ -32,6 +34,9 @@ class FakeSession extends EventEmitter {
   connected = false;
   closed = false;
   sent: Buffer[] = [];
+  raw: Buffer[] = [];
+  /** Whether a raw keepalive is echoed back as the hub does (default) or goes unanswered. */
+  echoKeepalive = true;
   /** What to do with a sent packet: "ack" (default), "nack" (errCode 1), "silent", or "close". */
   behaviour: "ack" | "nack" | "silent" | "close" = "ack";
   /** How connect() behaves: come up (default), throw, or never answer. */
@@ -62,7 +67,9 @@ class FakeSession extends EventEmitter {
       linkType,
     );
   }
-  sendRaw(): boolean {
+  sendRaw(bytes: Buffer): boolean {
+    this.raw.push(bytes);
+    if (this.isConnected && this.echoKeepalive) queueMicrotask(() => this.emit("keepaliveEcho"));
     return this.isConnected;
   }
   sendCommand(pkt: Buffer): boolean {
@@ -591,4 +598,247 @@ describe("RtcCommandRouter live view", () => {
     expect(media.p2pQuery).toBeUndefined();
     expect(media.p2pControlQuery).toBeUndefined();
   });
+});
+
+describe("RtcCommandRouter keepWarm", () => {
+  /** Run `fn` on fake timers covering the idle-close timeout and the keepalive interval. */
+  async function onWarmTimers(fn: () => Promise<void>): Promise<void> {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      await fn();
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
+  /** Drain the pending microtasks so an in-flight warm bring-up settles without advancing the clock. */
+  async function settle(): Promise<void> {
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+  }
+
+  it("opens the session and sends the portal keepalive on it at the ~29 s cadence", () =>
+    onWarmTimers(async () => {
+      const { router, sessions } = makeRouter();
+      try {
+        router.keepWarm(ST);
+        await settle();
+        expect(sessions).toHaveLength(1);
+        const s = sessions[0]!;
+        expect(s.raw).toHaveLength(0);
+        await vi.advanceTimersByTimeAsync(PORTAL_KEEPALIVE_MS);
+        expect(s.raw).toHaveLength(1);
+        expect(s.raw[0]).toEqual(PORTAL_KEEPALIVE);
+        await vi.advanceTimersByTimeAsync(PORTAL_KEEPALIVE_MS);
+        expect(s.raw).toHaveLength(2);
+      } finally {
+        router.close();
+      }
+    }));
+
+  it("suppresses the idle-close while warm, where a non-warm session is dropped", () =>
+    onWarmTimers(async () => {
+      const warm = makeRouter();
+      try {
+        warm.router.keepWarm(ST);
+        await settle();
+        const s = warm.sessions[0]!;
+        await vi.advanceTimersByTimeAsync(IDLE_CLOSE_MS * 2);
+        expect(s.closed).toBe(false);
+      } finally {
+        warm.router.close();
+      }
+      const plain = makeRouter();
+      try {
+        await plain.router.dispatchCommand(ST, arming(1));
+        const s = plain.sessions[0]!;
+        expect(s.closed).toBe(false);
+        await vi.advanceTimersByTimeAsync(IDLE_CLOSE_MS);
+        expect(s.closed).toBe(true);
+      } finally {
+        plain.router.close();
+      }
+    }));
+
+  it("stops the keepalive and resumes the idle-close once the hold is disposed", () =>
+    onWarmTimers(async () => {
+      const { router, sessions } = makeRouter();
+      try {
+        const dispose = router.keepWarm(ST);
+        await settle();
+        const s = sessions[0]!;
+        await vi.advanceTimersByTimeAsync(PORTAL_KEEPALIVE_MS);
+        expect(s.raw).toHaveLength(1);
+        dispose();
+        const after = s.raw.length;
+        await vi.advanceTimersByTimeAsync(PORTAL_KEEPALIVE_MS * 2);
+        expect(s.raw).toHaveLength(after);
+        await vi.advanceTimersByTimeAsync(IDLE_CLOSE_MS);
+        expect(s.closed).toBe(true);
+      } finally {
+        router.close();
+      }
+    }));
+
+  it("is idempotent: a second call arms no second keepalive timer", () =>
+    onWarmTimers(async () => {
+      const { router, sessions } = makeRouter();
+      try {
+        const first = router.keepWarm(ST);
+        const second = router.keepWarm(ST);
+        expect(second).toBe(first);
+        await settle();
+        expect(sessions).toHaveLength(1);
+        const s = sessions[0]!;
+        await vi.advanceTimersByTimeAsync(PORTAL_KEEPALIVE_MS);
+        expect(s.raw).toHaveLength(1);
+      } finally {
+        router.close();
+      }
+    }));
+
+  it("clears the keepalive when the session closes, and a later command opens a fresh one", () =>
+    onWarmTimers(async () => {
+      const { router, sessions } = makeRouter();
+      try {
+        router.keepWarm(ST);
+        await settle();
+        const s = sessions[0]!;
+        await vi.advanceTimersByTimeAsync(PORTAL_KEEPALIVE_MS);
+        expect(s.raw).toHaveLength(1);
+        s.close();
+        const after = s.raw.length;
+        await vi.advanceTimersByTimeAsync(PORTAL_KEEPALIVE_MS * 2);
+        expect(s.raw).toHaveLength(after);
+        await router.dispatchCommand(ST, arming(1));
+        expect(sessions).toHaveLength(2);
+      } finally {
+        router.close();
+      }
+    }));
+
+  it("leaves no close listener on the session once a hold is disposed, across repeated cycles", () =>
+    onWarmTimers(async () => {
+      const { router, sessions } = makeRouter();
+      try {
+        await router.dispatchCommand(ST, arming(1));
+        const s = sessions[0]!;
+        const before = s.listenerCount("close");
+        for (let i = 0; i < 12; i++) {
+          const dispose = router.keepWarm(ST);
+          await settle();
+          dispose();
+        }
+        expect(sessions).toHaveLength(1);
+        expect(s.listenerCount("close")).toBe(before);
+      } finally {
+        router.close();
+      }
+    }));
+
+  it("arms no keepalive when disposed before the bring-up finishes, and the session idle-closes", () =>
+    onWarmTimers(async () => {
+      const { router, sessions } = makeRouter();
+      try {
+        const dispose = router.keepWarm(ST);
+        dispose();
+        await settle();
+        expect(sessions).toHaveLength(1);
+        const s = sessions[0]!;
+        expect(s.closed).toBe(false);
+        await vi.advanceTimersByTimeAsync(PORTAL_KEEPALIVE_MS);
+        expect(s.raw).toHaveLength(0);
+        await vi.advanceTimersByTimeAsync(IDLE_CLOSE_MS - PORTAL_KEEPALIVE_MS);
+        expect(s.closed).toBe(true);
+        expect(s.raw).toHaveLength(0);
+      } finally {
+        router.close();
+      }
+    }));
+
+  it("clears the hold and reports a failed bring-up, and a later keepWarm opens a fresh session", () =>
+    onWarmTimers(async () => {
+      const onError = vi.fn();
+      const { router, sessions } = makeRouter({ onError });
+      FakeSession.connectMode = "throw";
+      try {
+        const first = router.keepWarm(ST);
+        await settle();
+        expect(onError).toHaveBeenCalledOnce();
+        expect(onError.mock.calls[0]![0]).toBeInstanceOf(Error);
+        expect((onError.mock.calls[0]![0] as Error).message).toMatch(/sign refused/);
+        expect(sessions).toHaveLength(1);
+        expect(sessions[0]!.closed).toBe(true);
+        FakeSession.connectMode = "up";
+        const second = router.keepWarm(ST);
+        expect(second).not.toBe(first);
+        await settle();
+        expect(sessions).toHaveLength(2);
+        const s = sessions[1]!;
+        await vi.advanceTimersByTimeAsync(PORTAL_KEEPALIVE_MS);
+        expect(s.raw).toEqual([PORTAL_KEEPALIVE]);
+      } finally {
+        FakeSession.connectMode = "up";
+        router.close();
+      }
+    }));
+
+  it("keeps the session while each keepalive is echoed, and drops it on the tick after one goes unechoed", () =>
+    onWarmTimers(async () => {
+      const warn = vi.fn();
+      const { router, sessions } = makeRouter({ logger: { debug: vi.fn(), info: vi.fn(), warn, error: vi.fn() } });
+      try {
+        router.keepWarm(ST);
+        await settle();
+        const s = sessions[0]!;
+        await vi.advanceTimersByTimeAsync(PORTAL_KEEPALIVE_MS * 3);
+        expect(s.raw).toHaveLength(3);
+        expect(s.closed).toBe(false);
+        s.echoKeepalive = false;
+        await vi.advanceTimersByTimeAsync(PORTAL_KEEPALIVE_MS);
+        expect(s.raw).toHaveLength(4);
+        expect(s.closed).toBe(false);
+        await vi.advanceTimersByTimeAsync(PORTAL_KEEPALIVE_MS);
+        expect(s.closed).toBe(true);
+        expect(s.raw).toHaveLength(4);
+        expect(warn).toHaveBeenCalledWith(expect.stringMatching(/unechoed/));
+        expect(s.listenerCount("keepaliveEcho")).toBe(0);
+      } finally {
+        router.close();
+      }
+    }));
+
+  it("clears the hold once an unechoed keepalive drops the session, so keepWarm and a command open a fresh one", () =>
+    onWarmTimers(async () => {
+      const { router, sessions } = makeRouter();
+      try {
+        const first = router.keepWarm(ST);
+        await settle();
+        sessions[0]!.echoKeepalive = false;
+        await vi.advanceTimersByTimeAsync(PORTAL_KEEPALIVE_MS * 2);
+        expect(sessions[0]!.closed).toBe(true);
+        const second = router.keepWarm(ST);
+        expect(second).not.toBe(first);
+        await settle();
+        expect(sessions).toHaveLength(2);
+        await router.dispatchCommand(ST, arming(1));
+        expect(sessions).toHaveLength(2);
+        expect(sessions[1]!.sent).toHaveLength(1);
+        await vi.advanceTimersByTimeAsync(PORTAL_KEEPALIVE_MS);
+        expect(sessions[1]!.raw).toEqual([PORTAL_KEEPALIVE]);
+      } finally {
+        router.close();
+      }
+    }));
+
+  it("refuses to warm a station while logged out, holding nothing", () =>
+    onWarmTimers(async () => {
+      const { router, sessions } = makeRouter({ identity: () => undefined });
+      try {
+        expect(() => router.keepWarm(ST)).toThrow(`rtc: not logged in, cannot warm ${SN}`);
+        await settle();
+        expect(sessions).toHaveLength(0);
+      } finally {
+        router.close();
+      }
+    }));
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { parseTuyaDpEvent, parseTuyaDpReport, TuyaDpRouter } from "../dp-codec.js";
+import { parseTuyaDpEvent, TuyaDpRouter } from "../dp-codec.js";
 import type { TuyaDpInbound } from "../../../core/contracts.js";
 
 describe("parseTuyaDpEvent", () => {
@@ -61,72 +61,6 @@ describe("parseTuyaDpEvent", () => {
 
   it("returns null when a value is an array", () => {
     expect(parseTuyaDpEvent({ "104": [1, 2] })).toBeNull();
-  });
-});
-
-describe("parseTuyaDpReport", () => {
-  const head = { cmd: 65537, cmd_status: 2, sign_code: 0, timestamp: 0 };
-
-  it("unwraps Anker {head,payload} envelope with data.dps (Tuya-native shape)", () => {
-    const raw = {
-      head,
-      payload: JSON.stringify({
-        t: "uuid",
-        protocol: 2,
-        account_id: "acct",
-        device_sn: "T8000P0000000000",
-        data: { dps: { "104": 80, "106": 0 } },
-      }),
-    };
-    expect(parseTuyaDpReport(raw)).toEqual({ "104": 80, "106": 0 });
-  });
-
-  it("unwraps Anker {head,payload} envelope with integer-keyed data directly (AIoT shape)", () => {
-    const raw = {
-      head,
-      payload: JSON.stringify({
-        t: "uuid",
-        protocol: 2,
-        account_id: "acct",
-        device_sn: "T8000P0000000000",
-        data: { "104": 80, "106": 0 },
-      }),
-    };
-    expect(parseTuyaDpReport(raw)).toEqual({ "104": 80, "106": 0 });
-  });
-
-  it("falls back to flat envelope.dps shape", () => {
-    expect(parseTuyaDpReport({ dps: { "104": 80 } })).toEqual({ "104": 80 });
-  });
-
-  it("falls back to flat envelope.data.dps shape", () => {
-    expect(parseTuyaDpReport({ data: { dps: { "104": 80 } } })).toEqual({ "104": 80 });
-  });
-
-  it("returns undefined for an unrecognised shape", () => {
-    expect(parseTuyaDpReport({ unknown: 1 })).toBeUndefined();
-  });
-
-  it("returns undefined for null", () => {
-    expect(parseTuyaDpReport(null)).toBeUndefined();
-  });
-
-  it("returns undefined for a non-object", () => {
-    expect(parseTuyaDpReport("string")).toBeUndefined();
-    expect(parseTuyaDpReport(42)).toBeUndefined();
-  });
-
-  it("returns undefined for an array", () => {
-    expect(parseTuyaDpReport([])).toBeUndefined();
-  });
-
-  it("returns undefined when payload is not a JSON string", () => {
-    expect(parseTuyaDpReport({ head, payload: { not: "a string" } })).toBeUndefined();
-  });
-
-  it("returns undefined when payload has no data field", () => {
-    const raw = { head, payload: JSON.stringify({ t: "uuid", protocol: 2 }) };
-    expect(parseTuyaDpReport(raw)).toBeUndefined();
   });
 });
 

@@ -16,7 +16,7 @@ eufy.on("propertyChanged", (e) => e.property); // ANY readable property moved �
 eufy.on("strangerDetected", (e) => …); // a person the device does NOT recognise
 eufy.on("soundDetected", (e) => …); // also cryingDetected, vehicleDetected, dogDetected
 eufy.on("armingModeChanged", (e) => …); // guard mode switched — re-read the mode
-eufy.on("alarm", (e) => e.phase); // "triggered" | "delayed"
+eufy.on("alarm", (e) => e.phase); // "triggered" | "delayed" | "stopped" — e.type says why
 eufy.on("ptzNotify", (e) => e.kind); // "rotate" | "zoom" | "position"
 
 // Catch-all: one listener for EVERY semantic event — payload tagged with `name` (a discriminated

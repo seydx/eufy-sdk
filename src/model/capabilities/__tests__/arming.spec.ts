@@ -260,6 +260,61 @@ describe("arming capability module", () => {
   });
 
   /**
+   * A standalone T8170's own Device Control entry: read from its own params (1225 Home, 1239 Away, 1148
+   * custom1), written to itself on cmd 1255 as a one-entry table with only flag 0x08 changed. Values as
+   * captured: Home 9 (notification + recording), Light Alarm 0x20, custom1 on mode_id 3.
+   */
+  describe("device notification (captured on a standalone T8170)", () => {
+    const t8170: CommandContext = { ...ctx, model: "T8170", channel: 0 };
+    const params: Record<string, string> = { homeAction: "41", awayAction: "9", custom1Action: "1" };
+    const read = (name: string) => (name in params ? { value: params[name] } : undefined);
+
+    it("reads its own flag per mode, and nothing for another channel or an unreported mode", () => {
+      const { acts } = bind<ArmingActions>("arming", t8170, { read });
+      expect(acts.deviceNotification!("home", 0)).toBe(true);
+      expect(acts.deviceNotification!("custom1", 0)).toBe(false);
+      expect(acts.deviceNotification!("home", 1), "a standalone camera answers only for itself").toBeUndefined();
+      expect(bind<ArmingActions>("arming", t8170).acts.deviceNotification!("away", 0)).toBeUndefined();
+    });
+
+    it("writes its one entry with only flag 0x08 changed, keeping the Light Alarm bit", async () => {
+      const { acts, sent } = bind<ArmingActions>("arming", t8170, { read });
+      await acts.setDeviceNotification!("home", 0, false);
+      await acts.setDeviceNotification!("custom1", 0, true);
+      expect(sent).toEqual([
+        {
+          kind: "set-json-raw",
+          cmd: 1255,
+          channel: 0,
+          data: { mode_id: 1, devices: [{ device_channel: 0, action: 0x01000021 }] },
+        },
+        {
+          kind: "set-json-raw",
+          cmd: 1255,
+          channel: 0,
+          data: { mode_id: 3, devices: [{ device_channel: 0, action: 0x03000009 }] },
+        },
+      ]);
+    });
+
+    it("rejects, sending nothing, for another channel or an unreported mode", async () => {
+      const { acts, sent } = bind<ArmingActions>("arming", t8170, { read });
+      await expect(acts.setDeviceNotification!("home", 1, true)).rejects.toThrow();
+      await expect(bind<ArmingActions>("arming", t8170).acts.setDeviceNotification!("away", 0, true)).rejects.toThrow();
+      expect(sent).toEqual([]);
+    });
+
+    it("is read only on a standalone model whose write is not confirmed", () => {
+      const { acts } = bind<ArmingActions>("arming", { ...t8170, model: "T8400" }, { read });
+      expect(acts.deviceNotification!("home", 0)).toBe(true);
+      expect(acts.setDeviceNotification).toBeUndefined();
+      expect(
+        bind<ArmingActions>("arming", { ...t8170, model: "T8171" }, { read }).acts.setDeviceNotification,
+      ).toBeDefined();
+    });
+  });
+
+  /**
    * The Device Control Notification checkbox, replayed on a T8010: the reported table written back whole on
    * cmd 1255, channel 0, with only one device's flag 0x08 changed. Synthetic table, captured shape.
    */

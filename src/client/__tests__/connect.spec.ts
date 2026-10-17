@@ -527,4 +527,47 @@ describe("EufyMega sessionExpired event", () => {
     expect(errors).toHaveLength(1);
     expect(errors[0]?.message).toBe("transient boom");
   });
+
+  it("reads a Tuya-only roster's DPs from the cloud without bringing up the broker", async () => {
+    const c = makeClient({ mqtt: 1, category: "eufy_home_tuya" });
+    const errors: Error[] = [];
+    c.eufy.on("error", (e: Error) => errors.push(e));
+    const fetchDps = vi.spyOn((c.eufy as any).tuya, "fetchDps").mockResolvedValue({ 8: 37 });
+    const deliver = vi.spyOn((c.eufy as any).tuyaDpRouter, "deliver").mockImplementation(() => {});
+
+    const readiness = await (c.eufy as any).ensureRealtime();
+    await vi.waitFor(() => expect(deliver).toHaveBeenCalledWith("m0", { 8: 37 }));
+    expect(fetchDps).toHaveBeenCalledWith("m0");
+    expect(c.mqtt).not.toHaveBeenCalled();
+    expect(readiness.mqtt.required).toBe(0);
+    expect(errors).toEqual([]);
+  });
+
+  it("waits on a Tuya device's first report without bringing up the broker", async () => {
+    const eufy = new EufyMega({ email: "t@example.com", password: "x" });
+    const registry = (eufy as any).registry;
+    const dev = { sn: "T2266P0000000000", category: "eufy_home_tuya", realtime: "smqtt" };
+    (eufy as any).realtimeGeneration = { epoch: (eufy as any).realtimeEpoch };
+    vi.spyOn(registry, "hasRealtimeState").mockReturnValue(false);
+    vi.spyOn(registry, "list").mockReturnValue([dev]);
+    vi.spyOn(registry, "capabilitiesForDevice").mockReturnValue(new Set(["vacuum_clean"]));
+    const awaitState = vi.spyOn(registry, "awaitRealtimeState").mockResolvedValue(undefined);
+    const start = vi.spyOn(eufy as any, "ensureMqttStarted");
+
+    await (eufy as any).awaitFirstRealtimeState(dev.sn);
+    expect(start).not.toHaveBeenCalled();
+    expect(awaitState).toHaveBeenCalledWith(dev.sn, 4000);
+  });
+
+  it("registers a Tuya clean-line device under its serial when the record names no Tuya id", async () => {
+    const eufy = new EufyMega({ email: "t@example.com", password: "x" });
+    vi.spyOn((eufy as any).registry, "getDevices").mockResolvedValue([
+      { sn: "T2880P0000000000", category: "eufy_home_tuya", raw: {} },
+      { sn: "T2266P0000000000", category: "eufy_home_tuya", raw: { tuya_uuid: "tuya-dev-1" } },
+    ]);
+    const register = vi.spyOn((eufy as any).tuya, "registerDevice");
+    await eufy.getDevices();
+    expect(register).toHaveBeenCalledWith("T2880P0000000000", "T2880P0000000000");
+    expect(register).toHaveBeenCalledWith("T2266P0000000000", "tuya-dev-1");
+  });
 });

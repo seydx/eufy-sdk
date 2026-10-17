@@ -333,4 +333,47 @@ describe("P2P data reassembly", () => {
     expect(received).toHaveLength(1);
     expect(received[0]!.raw).toEqual(payload);
   });
+
+  it("copies a 234 KB fragmented video payload once while preserving split headers and packed frames", async () => {
+    const { feed, received, close } = harness();
+    const payload = Buffer.alloc(234_129, 7);
+    const header = Buffer.alloc(16);
+    header.write("XZYH");
+    header.writeUInt16LE(1300, 4);
+    header.writeUInt32LE(payload.length, 6);
+    header[10] = 1;
+    const tail = Buffer.from([1, 2, 3, 4]);
+    const stream = Buffer.concat([
+      Buffer.concat([header, payload]),
+      commandFrame(40, 1301, Buffer.alloc(0)),
+      commandFrame(40, 1300, tail),
+    ]);
+    const packets: Buffer[] = [];
+    let offset = 0;
+    for (const length of [1, 3, 4, 7]) {
+      packets.push(dataPacket(40 + packets.length, stream.subarray(offset, offset + length)));
+      offset += length;
+    }
+    packets.push(dataPacket(40 + packets.length, Buffer.alloc(0)));
+    while (offset < stream.length) {
+      packets.push(dataPacket(40 + packets.length, stream.subarray(offset, offset + 1024)));
+      offset += 1024;
+    }
+    const copied: number[] = [];
+    const concat = Buffer.concat;
+    const spy = vi.spyOn(Buffer, "concat").mockImplementation((list, totalLength) => {
+      const result = concat(list, totalLength);
+      copied.push(result.length);
+      return result;
+    });
+    try {
+      for (const packet of packets) feed(packet);
+      expect(received.map((frame) => frame.commandId)).toEqual([1300, 1301, 1300]);
+      expect(received.map((frame) => frame.raw)).toEqual([payload, Buffer.alloc(0), tail]);
+      expect(copied.filter((bytes) => bytes > 1400)).toEqual([payload.length]);
+    } finally {
+      spy.mockRestore();
+      await close();
+    }
+  });
 });

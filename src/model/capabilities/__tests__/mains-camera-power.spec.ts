@@ -17,6 +17,51 @@ import type { EufyDevice } from "../../../core/types.js";
 const SN = "T84A1P0000000001";
 const BATTERY_CAPS = new Set<Capability>(["camera", "battery"]);
 
+describe("PoE camera power tier behind T8N00 (#437)", () => {
+  it.each([
+    ["T8E00", "Synthetic PoE Bullet PTZ Cam S4"],
+    ["T8P00", "Synthetic PoE Cam E40"],
+  ])("classifies %s as wired and withholds its sentinel battery reading", async (model, name) => {
+    const sn = `${model}P0000000001`;
+    const record = {
+      model,
+      name,
+      category: "eufy_security",
+      deviceClass: "camera",
+      stationSn: "T8N00P0000000000",
+      channel: 3,
+      params: { 1101: "100" },
+      raw: { parent_sn: "T8N00P0000000000", device_channel: 3 },
+    };
+    expect(cameraPowerTier(sn, BATTERY_CAPS)).toBe("wired");
+
+    const seen: string[] = [];
+    const media: MediaProvider = {
+      snapshotLive: async (opts) => {
+        seen.push(opts?.powered ?? "missing");
+        return { jpeg: Buffer.alloc(0), width: 1, height: 1 };
+      },
+      live: async (opts) => (seen.push(opts?.powered ?? "missing"), {}) as never,
+      record: async () => Buffer.alloc(0),
+    };
+    const { acts } = bind<CameraActions>(
+      "camera",
+      {
+        channel: record.channel,
+        codec: "camera",
+        model,
+        paramIds: new Set<number>([1101]),
+        capabilities: BATTERY_CAPS,
+      },
+      { media },
+    );
+    await acts.snapshotLive!();
+    await acts.live!();
+    expect(seen).toEqual(["wired", "wired"]);
+    expect(Device.fromRecord(sn, record).getProperty("battery")).toBeUndefined();
+  });
+});
+
 describe("mains-only camera power tier (T84A1 Wall Light Cam S100)", () => {
   it("classifies T84A1 as wired even with the battery capability resolved", () => {
     expect(cameraPowerTier("T84A1", BATTERY_CAPS)).toBe("wired");

@@ -50,9 +50,9 @@ export class TuyaCommandRouter {
   private loginOnce: Promise<void> | null = null;
 
   /**
-   * eufy SN → Tuya device ids, populated by the facade via {@link registerDevice}.
-   * The facade extracts the Tuya id from the `raw` device record fields (`tuya_uuid`,
-   * `tuya_virtual_id`, `tuya_device_id`, `virtualId`) and registers it once the device list loads.
+   * eufy SN → Tuya device ids, populated via {@link registerDevice} once the device list loads.
+   * The Tuya id is the record's first non-empty `tuya_uuid` / `tuya_virtual_id` / `tuya_device_id` /
+   * `virtualId`, or the device's serial when the record carries none of them.
    */
   private readonly snMap = new Map<string, TuyaDeviceIds>();
 
@@ -78,10 +78,10 @@ export class TuyaCommandRouter {
   }
 
   /**
-   * Register a eufy SN → Tuya devId mapping. Called by the facade for each `eufy_home_tuya`
-   * device after the cloud device list loads. The facade extracts the Tuya id from the device's
-   * raw record (`tuya_uuid` / `tuya_virtual_id` / `tuya_device_id` / `virtualId` fields).
-   * `gwId` defaults to `devId` — standalone devices share the two.
+   * Register a eufy SN → Tuya devId mapping for an `eufy_home_tuya` device. `devId` is the record's
+   * first non-empty `tuya_uuid` / `tuya_virtual_id` / `tuya_device_id` / `virtualId`, or the device's
+   * serial when the record carries none of them. `gwId` defaults to `devId` — standalone devices
+   * share the two.
    */
   registerDevice(sn: string, devId: string, gwId = devId): void {
     this.snMap.set(sn, { devId, gwId });
@@ -109,13 +109,9 @@ export class TuyaCommandRouter {
   }
 
   /**
-   * Fetch a device's cached DPs from the Tuya cloud (`thing.m.device.cache.dp.get`) and deliver
-   * the raw DP map to the caller. Used for initial state hydration after MQTT subscribe — gets the
-   * last-known state without waiting for the first realtime push.
-   *
-   * The response shape from `getDeviceDps` is not yet pinned from a live capture. The defensive
-   * extraction tries both `result.dps` (a nested map) and bare `result` (a flat map), and returns
-   * `null` when neither yields a non-empty record.
+   * Read a device's current DPs from the Tuya cloud (`smartlife.m.device.dp.get`) and answer the DP
+   * map: the reply's flat `result`, kept to integer DP keys with scalar values. Answers `null` for an
+   * unregistered device, a failed reply, or a reply with no DPs.
    */
   async fetchDps(sn: string): Promise<Record<string, unknown> | null> {
     const ids = this.snMap.get(sn);
@@ -123,14 +119,8 @@ export class TuyaCommandRouter {
     await this.ensureLoggedIn();
     const res = await this.client!.getDeviceDps<Record<string, unknown>>(ids.devId);
     if (!res.success || !res.result) return null;
-
-    // Try result.dps first (Tuya-native shape), then bare result filtered to integer DP keys.
-    const nested = (res.result as Record<string, unknown>).dps;
-    if (nested && typeof nested === "object" && !Array.isArray(nested) && Object.keys(nested).length > 0) {
-      return nested as Record<string, unknown>;
-    }
-    const flat = parseTuyaDpEvent(res.result);
-    return flat ? (flat as unknown as Record<string, unknown>) : null;
+    const dps = parseTuyaDpEvent(res.result);
+    return dps ? (dps as unknown as Record<string, unknown>) : null;
   }
 
   /**
@@ -152,7 +142,7 @@ export class TuyaCommandRouter {
     if (!ids) {
       throw new Error(
         `TuyaCommandRouter: no Tuya device id registered for ${sn}. ` +
-          "Ensure getDevices() was called and the cloud record includes a tuya_uuid / tuya_virtual_id field.",
+          "Ensure getDevices() was called; it registers every eufy_home_tuya device under its Tuya id or its serial.",
       );
     }
     await this.client!.publishDps(

@@ -132,7 +132,7 @@ function autoSpotlightCommand(on: boolean, ctx: CommandContext, opts: AutoSpotli
  *  - `"json"`: JSON control-payload (`{commandType:1400,data:{time,type,value}}` under 1700) —
  *    FLOODLIGHT_8425, wall-light cams, indoor pan/tilt (31/35) and CAMERA_4G_S330.
  *  - `"int-string"`: level-1 int+string — indoor/outdoor 1080p/2K siblings, outdoor-PT/solo-E30,
- *    and the Cam2C/Cam2/Cam3 families.
+ *    E330 Pro (T8600, deviceType 24, confirmed live), and the Cam2C/Cam2/Cam3 families.
  * NOTE: this is FRAME SHAPE only, not encryption LEVEL. The level (L1 vs L2) is a runtime topology
  * trait resolved at send time — never fixed by family here. The switch shape happens to be L1 for
  * both branches; brightness/colorTemp (below) are a separate, pinned case.
@@ -174,6 +174,7 @@ const LIGHT_SWITCH_INT_STRING_TYPES: ReadonlySet<number> = new Set<number>([
   DeviceType.CAMERA2C_PRO,
   DeviceType.CAMERA3,
   DeviceType.CAMERA3C,
+  DeviceType.PROFESSIONAL_247,
 ]);
 
 /**

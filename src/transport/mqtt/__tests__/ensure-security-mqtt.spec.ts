@@ -111,4 +111,17 @@ describe("MqttCommandRouter.ensureSecurityMqttFor — broker-instance probe", ()
     );
     expect(discoverReachableInstance).toHaveBeenCalledTimes(1);
   });
+
+  it("names each candidate's reason when none grants, a SUBACK deny code included", async () => {
+    discoverReachableInstance.mockResolvedValueOnce([
+      { ip: "192.0.2.10", granted: false, grantedQos: 0x80, error: "Subscribe error: Unspecified error", ms: 10 },
+      { ip: "198.51.100.20", granted: false, error: "timeout", ms: 8000 },
+    ]);
+
+    const err = await (makeRouter() as any).ensureSecurityMqttFor(DEV).catch((e: Error) => e);
+
+    expect(err.message).toContain("192.0.2.10 SUBACK 0x80 Subscribe error: Unspecified error");
+    expect(err.message).toContain("198.51.100.20 timeout");
+    expect(err.message).not.toMatch(/may be offline/);
+  });
 });

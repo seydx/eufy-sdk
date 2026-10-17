@@ -3,11 +3,11 @@
  *
  * The eufy app does NOT exchange a server credential with Tuya. Instead it deterministically
  * derives a Tuya username + password from the eufy account's numeric user id and logs into the
- * Tuya cloud with them (auto-registering that Tuya user on first login). Reverse-engineered +
- * verified against a live capture of the Thingclips SDK 7.5.0:
+ * Tuya cloud with them (auto-registering that Tuya user on first login). The derivation is the
+ * app's `TuyaAccountUtils` under its production (`MP`) environment, which selects the `eh-` prefix:
  *
- *   username = "eufyhome-" + eufyUserId
- *   password = UPPERCASE-HEX( AES-128-CBC-NoPadding( pad16("eufyhome-"+eufyUserId, '0'), KEY, IV ) )
+ *   username = "eh-" + eufyUserId
+ *   password = UPPERCASE-HEX( AES-128-CBC-NoPadding( pad16("eh-"+eufyUserId, '0'), KEY, IV ) )
  *
  * where the plaintext is **leading**-zero-padded ('0', 0x30) up to the next multiple of 16 bytes
  * (the app builds the string in `padStart` order — zeros first, string after — wire-confirmed), and
@@ -15,8 +15,11 @@
  */
 import { createCipheriv } from "node:crypto";
 
-/** Username/plaintext prefix the app prepends to the eufy user id. */
-export const TUYA_USERNAME_PREFIX = "eufyhome-";
+/**
+ * Username/plaintext prefix the app prepends to the eufy user id. The production app uses `eh-`;
+ * `eufyhome-` is the prefix of its QA environment only.
+ */
+export const TUYA_USERNAME_PREFIX = "eh-";
 
 /** AES-128-CBC key used to derive the Tuya password (16 bytes). */
 export const TUYA_PASSWORD_KEY = Buffer.from([
@@ -28,7 +31,7 @@ export const TUYA_PASSWORD_IV = Buffer.from([
   0x77, 0x24, 0x56, 0xf2, 0xa7, 0x66, 0x4c, 0xf3, 0x39, 0x2c, 0x35, 0x97, 0xe9, 0x3e, 0x57, 0x47,
 ]);
 
-/** The Tuya username for a eufy user id (`"eufyhome-" + eufyUserId`). */
+/** The Tuya username for a eufy user id (`"eh-" + eufyUserId`). */
 export function tuyaUsername(eufyUserId: string): string {
   return TUYA_USERNAME_PREFIX + eufyUserId;
 }
@@ -48,7 +51,7 @@ function zeroPadTo16(s: string): Buffer {
 
 /**
  * Derive the Tuya password for a eufy user id:
- * `UPPERCASE-HEX( AES-128-CBC-NoPadding( pad16("eufyhome-"+eufyUserId), KEY, IV ) )`.
+ * `UPPERCASE-HEX( AES-128-CBC-NoPadding( pad16("eh-"+eufyUserId), KEY, IV ) )`.
  * Deterministic (fixed KEY/IV) — the same user id always yields the same password.
  */
 export function deriveTuyaPassword(eufyUserId: string): string {
@@ -167,7 +170,7 @@ export function resolveCountryCode(phoneCode?: string, region?: string, isoCode?
 
 /** A derived Tuya login identity — everything needed to call the uid token/password login actions. */
 export interface TuyaAccount {
-  /** `"eufyhome-" + eufyUserId`. */
+  /** `"eh-" + eufyUserId`. */
   username: string;
   /** AES-derived password (uppercase hex). See {@link deriveTuyaPassword}. */
   password: string;

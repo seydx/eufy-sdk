@@ -425,11 +425,23 @@ function hasUnreflectedHomeBasePower(ctx: CommandContext): boolean {
 }
 
 /**
+ * Whether this camera is powered through the privacy burst: an S350 riding a HomeBase, the only topology run.
+ * A standalone S350 stays on the auto-sealed 1035, which a keyless session can still send.
+ */
+function hasPrivacyPower(ctx: CommandContext): boolean {
+  return ctx.deviceType === DeviceType.INDOOR_PT_CAMERA_S350 && ctx.homeBaseAttached === true;
+}
+
+/**
  * Camera power: T8410 on HomeBase 3 uses the wrapped disable-bit switch when its firmware selects
  * that route. Other cameras retain the captured 1035 scalar command and family polarity.
  * The payload retains mValue3=0 and the camera channel; the transport injects the account identity.
+ *
+ * - The HomeBase-attached S350 ({@link hasPrivacyPower}) is written through {@link privacyCommand}, which is
+ *   level-2 only. ✅ Observed live on a HomeBase-attached T8416.
  */
 function powerCommand(on: boolean, ctx: CommandContext): Command {
+  if (hasPrivacyPower(ctx)) return privacyCommand(!on, ctx.channel);
   if (usesHomeBasePowerPayload(ctx)) return setPayload(CAMERA_CMD.PRIVACY_MODE, { switch: on ? 0 : 1 }, ctx, 0);
   return setScalar(CAMERA_CMD.CAMERA_ENABLE, powerValue(on, ctx), ctx, "auto");
 }
@@ -477,15 +489,16 @@ function poweredOf(ctx: CommandContext): "wired" | "battery" {
  * T8410/HomeBase 3 retains a useful startup enable bit, but it does not reliably reflect the privacy write.
  * Do not poll that bit to confirm the wrapped command. Other routes retain their existing readback.
  *
- * `undefined` where a device reported neither param and has no enablement readback.
+ * `undefined` where a device reported neither param and has no enablement readback, or where
+ * `readReflectsWrite` says its read does not follow the write.
  */
 function enablementReflection(
   on: boolean,
   ctx: CommandContext,
 ): { param: number; expected: boolean | number; observed: boolean } | undefined {
+  if (!CAMERA_MEMBERS.enabled.readReflectsWrite(ctx)) return undefined;
   const alias = CAMERA_MEMBERS.enabled.readAliases[0].paramType;
   if (ctx.paramIds.has(alias)) return { param: alias, expected: on, observed: on };
-  if (hasUnreflectedHomeBasePower(ctx)) return undefined;
   if (ctx.paramIds.has(CAMERA_CMD.CAMERA_ENABLE)) {
     return {
       param: CAMERA_CMD.CAMERA_ENABLE,
@@ -502,7 +515,7 @@ function enablementReflection(
  * `undefined` is permissive: a camera that never reported its state is not a camera known to be off.
  */
 function refuseWhenDisabled(ctx: CommandContext, read: (name: string) => { value: unknown } | undefined): void {
-  if (!hasUnreflectedHomeBasePower(ctx) && read("enabled")?.value === false)
+  if (CAMERA_MEMBERS.enabled.readReflectsWrite(ctx) && read("enabled")?.value === false)
     throw new CameraDisabledError(ctx.name ?? ctx.serial);
 }
 
@@ -551,7 +564,7 @@ export const CAMERA_MEMBERS = {
     invert: true,
     invertFor: (ctx) => (isT8410HomeBase3(ctx) ? false : undefined),
     readAliases: [{ paramType: 2001, invert: false }],
-    readReflectsWrite: (ctx) => !hasUnreflectedHomeBasePower(ctx),
+    readReflectsWrite: (ctx) => !hasUnreflectedHomeBasePower(ctx) && !hasPrivacyPower(ctx),
     description:
       "Camera enabled. Family-dependent wire param: 1035 CMD_DEVS_SWITCH (enable bit on T8410/HomeBase 3, " +
       "disable bit on battery/solo cams) or 2001 OPEN_DEVICE (standalone indoor/outdoor). Reported on/off state; " +

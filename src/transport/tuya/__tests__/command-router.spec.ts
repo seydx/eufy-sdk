@@ -1,5 +1,6 @@
 import { generateKeyPairSync } from "node:crypto";
 import { TuyaCommandRouter } from "../command-router.js";
+import { TuyaClient } from "../client.js";
 import type { TuyaHttpPost } from "../request.js";
 
 function makeTestRsaKey(): { n: string; e: string } {
@@ -48,10 +49,37 @@ describe("TuyaCommandRouter", () => {
     expect(router.loginOnce).toBeNull();
 
     // Second dispatch: login succeeds on the retry. publishDps may still fail (the stub doesn't handle
-    // thing.m.device.dp.publish) — but the error must NOT be the stale TRANSIENT_FAILURE, proving
+    // smartlife.m.device.dp.publish) — but the error must NOT be the stale TRANSIENT_FAILURE, proving
     // the login was retried rather than the rejected promise reused.
     const secondErr = await router.dispatchCommand("sn-1", cmd).catch((err: Error) => err.message);
     // second dispatch must not re-throw the stale TRANSIENT_FAILURE (it either succeeds or fails differently)
     expect(secondErr ?? "").not.toMatch(/TRANSIENT_FAILURE/);
+  });
+
+  describe("fetchDps", () => {
+    /** A router with a preset session whose dp.get answers `reply`; records the actions it sent. */
+    function routerAnswering(reply: unknown): { router: TuyaCommandRouter; actions: string[] } {
+      const actions: string[] = [];
+      const http: TuyaHttpPost = async (_url, body) => {
+        actions.push(new URLSearchParams(body).get("a")!);
+        return reply;
+      };
+      const router = new TuyaCommandRouter({ http });
+      router.registerDevice("sn-1", "dev-1");
+      // @ts-expect-error — a logged-in client stands in for the login round-trip
+      router.loginOnce = Promise.resolve();
+      // @ts-expect-error — accessing private field for test
+      router.client = new TuyaClient({ signer: { sign: () => "0".repeat(64) }, chKey: "7cbfe6d8", sid: "s", http });
+      return { router, actions };
+    }
+
+    it("reads dp.get and answers its flat result, kept to integer DP keys with scalar values", async () => {
+      const { router, actions } = routerAnswering({
+        success: true,
+        result: { "8": 37, "5": "standby", "47": true, x: 1, "113": { nested: 1 } },
+      });
+      expect(await router.fetchDps("sn-1")).toEqual({ 5: "standby", 8: 37, 47: true });
+      expect(actions).toEqual(["smartlife.m.device.dp.get"]);
+    });
   });
 });

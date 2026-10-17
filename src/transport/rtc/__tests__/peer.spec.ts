@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { DataChannel, PeerConnection, RtcConfig } from "node-datachannel";
 import { COMMAND_CHANNEL, DATA_CHANNEL_LABELS, RtcPeer } from "../peer.js";
+import { PORTAL_KEEPALIVE } from "../portal-keepalive.js";
 import { ANKER_MAX_MESSAGE_SIZE, scallJsonToSdp, sdpToScallJson } from "../scall-sdp.js";
 
 /** The slice of `DataChannel` the peer drives. */
@@ -274,6 +275,29 @@ describe("RtcPeer", () => {
     peer.close();
     expect(pc().closed).toBe(true);
     expect(peer.sendCommand(packet)).toBe(false);
+  });
+
+  it("surfaces the hub's keepalive echo on the command channel as keepaliveEcho, outside the frames", async () => {
+    const { peer, pc } = setup();
+    await peer.init(TURN);
+    const answering = peer.handleRemoteOffer(OFFER);
+    pc().fireLocalAnswer(ANSWER);
+    await answering;
+    const cmd = pc().channels.find((c) => c.label === COMMAND_CHANNEL)!;
+    cmd.fireOpen();
+    const echoes = vi.fn();
+    const frames = vi.fn();
+    peer.on("keepaliveEcho", echoes);
+    peer.on("data", frames);
+    cmd.fireMessage(Buffer.from(PORTAL_KEEPALIVE));
+    expect(echoes).toHaveBeenCalledTimes(1);
+    pc()
+      .channels.find((c) => c.label === "video")!
+      .fireMessage(Buffer.from(PORTAL_KEEPALIVE));
+    cmd.fireMessage(Buffer.from(PORTAL_KEEPALIVE.subarray(0, 20)));
+    expect(echoes).toHaveBeenCalledTimes(1);
+    expect(frames).not.toHaveBeenCalled();
+    peer.close();
   });
 
   it("rejects a pending local answer when the peer is closed instead of dropping it", async () => {

@@ -334,3 +334,24 @@ describe("level-2 key re-prompt", () => {
     expect(sent).toEqual([1100]);
   });
 });
+
+/**
+ * Standalone indoor cameras answer the gateway-info prompt in the clear (signCode 0) with the same 133-byte
+ * layout a HomeBase seals at level 1. Measured on a fleet: three indoor cameras replied in the clear;
+ * negotiating from that reply produced a key one of them then accepted a level-2 live start under.
+ */
+describe("a gateway-info reply sent in the clear", () => {
+  it("negotiates the level-2 key from it", async () => {
+    const resolveCipherKey = vi.fn(async () => undefined);
+    const target = session(resolveCipherKey);
+
+    (target as unknown as { handleFrame(h: object, p: Buffer, t: number): void }).handleFrame(
+      { commandId: 1100, signCode: 0, bytesToRead: 64 },
+      gatewayInfo(97),
+      0,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(resolveCipherKey).toHaveBeenCalledWith(97);
+  });
+});

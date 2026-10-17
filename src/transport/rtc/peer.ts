@@ -18,6 +18,7 @@
 import { EventEmitter } from "node:events";
 import type { DataChannel, IceServer, PeerConnection, RtcConfig } from "node-datachannel";
 import { noopLogger, type Logger } from "../../core/logger.js";
+import { PORTAL_KEEPALIVE } from "./portal-keepalive.js";
 import { PtcsFramer } from "./ptcs-framer.js";
 import {
   ANKER_MAX_MESSAGE_SIZE,
@@ -50,6 +51,8 @@ export interface RtcPeerEvents {
   /** The command channel went away while the peer itself may still be up. */
   commandChannelClosed: [];
   data: [frame: Buffer, linkType: number];
+  /** The hub echoed the portal keepalive on the command channel. */
+  keepaliveEcho: [];
   iceCandidate: [candidate: string];
   iceGatheringComplete: [];
   connectionState: [state: string];
@@ -281,7 +284,8 @@ export class RtcPeer extends EventEmitter<RtcPeerEvents> {
 
   /**
    * Wire one data channel. Every channel feeds the framer once the command channel has opened it; a
-   * message before that has nothing to reassemble into and is dropped.
+   * message before that has nothing to reassemble into and is dropped. The hub's echo of the portal
+   * keepalive on the command channel is unframed and surfaces as `keepaliveEcho` instead.
    */
   private wireChannel(label: string, dc: DataChannel): void {
     if (this.channels.has(label)) return;
@@ -316,6 +320,10 @@ export class RtcPeer extends EventEmitter<RtcPeerEvents> {
       this.wireTally.set(label, n);
       if (n <= 3 || n % 100 === 0) {
         this.logger.debug(`[rtc] wire ${label} #${n} ${buf.length}B ${buf.subarray(0, 8).toString("hex")}`);
+      }
+      if (label === COMMAND_CHANNEL && buf.equals(PORTAL_KEEPALIVE)) {
+        this.emit("keepaliveEcho");
+        return;
       }
       this.framer?.recvPacket(buf);
     });

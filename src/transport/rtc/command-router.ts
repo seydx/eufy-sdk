@@ -31,6 +31,7 @@ import { captureSnapshotFromShared } from "../p2p/media.js";
 import { openReadableFromConsumer } from "../p2p/readable-egress.js";
 import { SharedLiveSource, attachUnlessAborted } from "../p2p/shared-live-source.js";
 import { RtcLiveStream } from "./live.js";
+import { PORTAL_KEEPALIVE, PORTAL_KEEPALIVE_MS } from "./portal-keepalive.js";
 import { RtcSession, type RtcSessionOptions } from "./session.js";
 import {
   buildPortalPacket,
@@ -118,6 +119,20 @@ interface StationSession {
 }
 
 /**
+ * A {@link RtcCommandRouter.keepWarm} hold on one station: the keepalive timer sending
+ * {@link PORTAL_KEEPALIVE}, the session listeners that end it and record the hub's echo, and whether the
+ * last keepalive sent is still unechoed.
+ */
+interface WarmHold {
+  keepalive?: ReturnType<typeof setInterval>;
+  /** The station session the hold leases, and its `close` and `keepaliveEcho` listeners the disposer removes. */
+  watch?: { st: StationSession; onClose: () => void; onEcho: () => void };
+  /** A keepalive went out and the hub has not echoed it since. */
+  awaitingEcho: boolean;
+  dispose: () => void;
+}
+
+/**
  * A live start for one camera while the station streams another: the station streams one camera at a
  * time. A live still refused this way is a {@link LiveSnapshotUnavailableError} with `source-failed`.
  */
@@ -131,6 +146,7 @@ class StationStreamBusyError extends Error {
 export class RtcCommandRouter {
   private readonly sessions = new Map<string, StationSession>();
   private readonly lives = new Map<string, StationLive>();
+  private readonly warm = new Map<string, WarmHold>();
 
   constructor(private readonly deps: RtcCommandRouterDeps) {}
 
@@ -418,6 +434,93 @@ export class RtcCommandRouter {
         .then(() => session.connect())
         .catch((e: unknown) => finish(e instanceof Error ? e : new Error(String(e))));
     });
+  }
+
+  /**
+   * Hold a station's command session open: one hold per station, its idle-close ({@link IDLE_CLOSE_MS})
+   * suppressed, {@link PORTAL_KEEPALIVE} sent every {@link PORTAL_KEEPALIVE_MS}, and the session dropped
+   * on a tick that finds the previous keepalive unechoed. A closed session ends the hold.
+   *
+   * Answers an idempotent disposer that releases the hold. Throws when no account is logged in.
+   */
+  keepWarm(route: RtcRoute): () => void {
+    const sn = route.stationSn;
+    const existing = this.warm.get(sn);
+    if (existing) return existing.dispose;
+    const identity = this.deps.identity();
+    if (!identity) throw new Error(`rtc: not logged in, cannot warm ${sn}`);
+    const hold: WarmHold = {
+      awaitingEcho: false,
+      dispose: () => {
+        if (this.warm.get(sn) !== hold) return;
+        this.warm.delete(sn);
+        const st = hold.watch?.st;
+        this.unwatch(hold);
+        if (st) {
+          st.leases = Math.max(0, st.leases - 1);
+          this.touch(sn, st);
+        }
+      },
+    };
+    this.warm.set(sn, hold);
+    void this.warmUp(sn, route, identity, hold);
+    return hold.dispose;
+  }
+
+  /**
+   * Bring a station session up for a {@link keepWarm} hold and start its keepalive. A bring-up that fails,
+   * or a hold disposed before it completes, clears the hold and arms no timer. Each tick first checks
+   * that the hub echoed the previous keepalive, and drops the session when it did not. The keepalive
+   * stops when the session closes, which also clears the hold so the next command or `keepWarm`
+   * rebuilds cleanly.
+   */
+  private async warmUp(sn: string, route: RtcRoute, identity: RtcIdentity, hold: WarmHold): Promise<void> {
+    const adminUserId = route.adminUserId || identity.userId;
+    let st: StationSession;
+    try {
+      st = await this.stationSession(route, adminUserId, identity);
+    } catch (e) {
+      if (this.warm.get(sn) === hold) this.warm.delete(sn);
+      this.deps.onError?.(e instanceof Error ? e : new Error(String(e)));
+      return;
+    }
+    if (this.warm.get(sn) !== hold) {
+      this.touch(sn, st);
+      return;
+    }
+    st.leases++;
+    this.touch(sn, st);
+    const onClose = (): void => {
+      this.unwatch(hold);
+      if (this.warm.get(sn) === hold) this.warm.delete(sn);
+    };
+    const onEcho = (): void => {
+      hold.awaitingEcho = false;
+    };
+    hold.watch = { st, onClose, onEcho };
+    st.session.once("close", onClose);
+    st.session.on("keepaliveEcho", onEcho);
+    hold.keepalive = setInterval(() => {
+      if (hold.awaitingEcho) {
+        this.deps.logger?.warn?.(`[rtc] ${sn} warm keepalive went unechoed, dropping the session`);
+        this.drop(sn, st);
+        return;
+      }
+      hold.awaitingEcho = true;
+      st.session.sendRaw(PORTAL_KEEPALIVE);
+    }, PORTAL_KEEPALIVE_MS);
+    hold.keepalive.unref?.();
+  }
+
+  /** Stop a hold's keepalive and remove its listeners from the session it watches. */
+  private unwatch(hold: WarmHold): void {
+    if (hold.keepalive) clearInterval(hold.keepalive);
+    hold.keepalive = undefined;
+    if (hold.watch) {
+      hold.watch.st.session.off("close", hold.watch.onClose);
+      hold.watch.st.session.off("keepaliveEcho", hold.watch.onEcho);
+    }
+    hold.watch = undefined;
   }
 
   private touch(sn: string, st: StationSession): void {

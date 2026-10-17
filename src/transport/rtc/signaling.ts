@@ -23,6 +23,7 @@
 import { EventEmitter } from "node:events";
 import { createHmac, randomUUID } from "node:crypto";
 import { noopLogger, type Logger } from "../../core/logger.js";
+import { withoutTokenEcho } from "../token-echo.js";
 
 const RTC_WS_PATH = "/v1/rtc/ws/join?reqtype=nvr";
 const RTC_SIGN_PATH = "/v1/smart/nvr/ws/sign";
@@ -171,7 +172,7 @@ export class RtcSignalingClient extends EventEmitter<RtcSignalingEvents> {
     const body = ((await res.json().catch(() => ({}))) ?? {}) as { code?: number; data?: string; msg?: string };
     if (!res.ok || body.code !== 0 || !body.data) {
       throw new Error(
-        `RTC sign for ${this.opts.stationSn} refused: HTTP ${res.status} code ${body.code ?? "?"} ${body.msg ?? ""}`.trim(),
+        `RTC sign for ${this.opts.stationSn} refused: HTTP ${res.status} code ${body.code ?? "?"} ${withoutTokenEcho(body.msg ?? "")}`.trim(),
       );
     }
     this.sign = body.data;

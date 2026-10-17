@@ -15,7 +15,8 @@ import {
   PtzDirection,
   type PtzActions,
 } from "../ptz.js";
-import { buildCommand } from "../index.js";
+import { buildCommand, detectCapabilities } from "../index.js";
+import { resolveDevice } from "../../registry.js";
 import { bind } from "./bind.js";
 import type { CapabilityFrame, InboundSignal, CommandContext } from "../types.js";
 import type { Command, MediaProvider } from "../../../core/contracts.js";
@@ -80,8 +81,16 @@ describe("ptz capability module", () => {
   describe("detection", () => {
     it("SoloCam preset params + Indoor-PT vendor deviceTypes", () => {
       // Preset params prove SoloCam; deviceType 31/35/111 prove Indoor-PT (which reports no PT param).
-      expect(PTZ.detection?.evidenceParams).toEqual(expect.arrayContaining([6090, 6091, 6092, 6210]));
+      for (const p of [6090, 6091, 6092, 6210]) {
+        expect(detectCapabilities({ model: "T8171", params: { [p]: "0" } }, "camera")).toContain("ptz");
+      }
       expect(PTZ.detection?.deviceTypes).toEqual(expect.arrayContaining([31, 35, 111]));
+    });
+    it("a fixed-lens T8134 reporting preset params as 0 is not pan-tilt", () => {
+      const presets = { 6090: "0", 6091: "0", 6092: "0" };
+      expect(detectCapabilities({ model: "T8134", deviceType: 63, params: presets }, "camera")).not.toContain("ptz");
+      expect(resolveDevice({ model: "T8134", deviceType: 63, params: presets }).capabilities).not.toContain("ptz");
+      expect(resolveDevice({ model: "T8171", params: presets }).capabilities).toContain("ptz");
     });
     it("model-name regex matches PT families but not a fixed cam", () => {
       const re = PTZ.detection!.modelHints![0];

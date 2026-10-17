@@ -93,7 +93,11 @@ export const CONNECT_TIMEOUT_MS = 15_000;
  * session's channel-taking methods resolve an omitted channel to.
  */
 export const STATION_CHANNEL = 255;
-/** CMD_GATEWAYINFO — sent once on connect to prompt the station to start reporting. */
+/**
+ * CMD_GATEWAYINFO — sent once on connect to prompt the station to start reporting. The reply carries the
+ * level-2 key envelope in one layout under either seal: level-1 encrypted (signCode 1) or in the clear
+ * (signCode 0).
+ */
 const CMD_GATEWAYINFO = 1100;
 const CMD_START_REALTIME_MEDIA = 1003;
 const CMD_STOP_REALTIME_MEDIA = 1004;
@@ -470,7 +474,10 @@ export class P2PSession extends EventEmitter {
    * In-flight multi-datagram frame per data channel (see reassemble): the payload gathered so far under its
    * parsed header, or, without a header, the start of a frame header cut by the datagram boundary.
    */
-  private readonly pendingByDataType = new Map<number, { header?: P2PDataFrameHeader; buf: Buffer }>();
+  private readonly pendingByDataType = new Map<
+    number,
+    { header?: P2PDataFrameHeader; chunks: Buffer[]; byteLength: number }
+  >();
   /** Last delivered datagram sequence number per data type. */
   private readonly lastSeqByType = new Map<number, number>();
   /** Held datagrams and their active gap timer, grouped by data type. */
@@ -972,6 +979,8 @@ export class P2PSession extends EventEmitter {
       }
     } else if (hasHeader(msg, ResponseMessageType.CAM_ID) || hasHeader(msg, ResponseMessageType.TURN_SERVER_CAM_ID)) {
       this.onConnected({ host: rinfo.address, port: rinfo.port }, socket);
+    } else if (hasHeader(msg, ResponseMessageType.END)) {
+      if (fromConnectedPeer) void this.close().catch((error) => this.emit("error", error));
     } else if (hasHeader(msg, ResponseMessageType.PONG)) {
       this.lastPongData = msg.length > 4 ? msg.subarray(4) : undefined;
     } else if (hasHeader(msg, ResponseMessageType.PING)) {
@@ -980,30 +989,9 @@ export class P2PSession extends EventEmitter {
       this.onAck(msg);
     } else if (hasHeader(msg, ResponseMessageType.DATA)) {
       if (this.connected) this.onData(msg, { host: rinfo.address, port: rinfo.port });
-    } else if (hasHeader(msg, ResponseMessageType.END)) {
-      this.onPeerEnd({ host: rinfo.address, port: rinfo.port });
     } else if (!hasHeader(msg, ResponseMessageType.CAM_ADDR)) {
       this.logger.debug(`[p2p] ${this.cfg.stationSn} UNHANDLED payload hex: ${msg.toString("hex")}`);
     }
-  }
-
-  /**
-   * The station ended the connection with `END` (`0xf1f0`) from the address the session is connected to.
-   *
-   * Nothing arrives on that connection afterwards: measured on an own-session camera streaming for about a
-   * minute, the station sent `END`, video stopped, and every media start sent on the same session went
-   * unacknowledged while the session kept answering pings. Closing here emits `close`, which drops what rides
-   * the session, so the next acquisition builds a fresh one instead of re-attaching to a dead stream.
-   *
-   * No `END` is sent back, because the station has already left. An `END` from any other address, or before
-   * the handshake completed, says nothing about this connection and is ignored.
-   */
-  private onPeerEnd(from: Address): void {
-    const addr = this.connectAddress;
-    if (!this.connected || !addr || addr.host !== from.host || addr.port !== from.port) return;
-    this.logger.info(`[p2p] ${this.cfg.stationSn} station ended the session`);
-    this.connectAddress = undefined;
-    void this.close();
   }
 
   private beginCheckCam(addr: Address, socket: dgram.Socket): void {
@@ -2138,29 +2126,30 @@ export class P2PSession extends EventEmitter {
    * Frames are packed back to back, so a frame header can itself be cut by a datagram boundary. The start
    * of a header left at the end of a datagram is carried into the next one rather than discarded; dropping
    * it would lose that frame and every frame after it until a datagram happened to begin on a header.
+   * Payload fragments retain their original slices and are copied once, when the complete frame is delivered.
    */
   private reassemble(dataType: number, datagramBody: Buffer): void {
     const pending = this.pendingByDataType.get(dataType);
-    let body = pending ? Buffer.concat([pending.buf, datagramBody]) : datagramBody;
-    const carryHeader = pending?.header;
     this.pendingByDataType.delete(dataType);
+    let body = pending && !pending.header ? Buffer.concat([...pending.chunks, datagramBody]) : datagramBody;
 
-    if (carryHeader) {
-      // continuing a frame: we have header already; body is the accumulated payload
-      if (body.length < carryHeader.bytesToRead) {
-        this.pendingByDataType.set(dataType, { header: carryHeader, buf: body });
+    if (pending?.header) {
+      const taken = Math.min(pending.header.bytesToRead - pending.byteLength, body.length);
+      pending.chunks.push(body.subarray(0, taken));
+      pending.byteLength += taken;
+      body = body.subarray(taken);
+      if (pending.byteLength < pending.header.bytesToRead) {
+        this.pendingByDataType.set(dataType, pending);
         return;
       }
-      this.handleFrame(carryHeader, body.subarray(0, carryHeader.bytesToRead), dataType);
-      body = body.subarray(carryHeader.bytesToRead);
+      this.handleFrame(pending.header, Buffer.concat(pending.chunks, pending.byteLength), dataType);
     }
 
     while (body.length >= P2P_DATA_HEADER_BYTES && body.subarray(0, 4).toString() === MAGIC_WORD) {
       const header = parseDataFrameHeader(body);
       const payload = body.subarray(P2P_DATA_HEADER_BYTES);
       if (payload.length < header.bytesToRead) {
-        // frame spans into following datagram(s) — stash and wait
-        this.pendingByDataType.set(dataType, { header, buf: payload });
+        this.pendingByDataType.set(dataType, { header, chunks: [payload], byteLength: payload.length });
         return;
       }
       this.handleFrame(header, payload.subarray(0, header.bytesToRead), dataType);
@@ -2171,7 +2160,7 @@ export class P2PSession extends EventEmitter {
       body.length < P2P_DATA_HEADER_BYTES &&
       MAGIC_WORD.startsWith(body.subarray(0, 4).toString())
     ) {
-      this.pendingByDataType.set(dataType, { buf: body });
+      this.pendingByDataType.set(dataType, { chunks: [body], byteLength: body.length });
     }
   }
 
@@ -2231,7 +2220,7 @@ export class P2PSession extends EventEmitter {
     // key. If a cipher-key resolver is configured, negotiate the key once (async, fire-and-forget).
     if (
       header.commandId === CMD_GATEWAYINFO &&
-      header.signCode === 1 &&
+      header.signCode <= 1 &&
       !this.level2Key &&
       !this.level2Negotiating &&
       this.cfg.resolveCipherKey

@@ -89,6 +89,7 @@ import { STORAGE } from "./storage.js";
 import { VACUUM_CLEAN } from "./vacuum-clean.js";
 import { VACUUM_DOCK } from "./vacuum-dock.js";
 import { SUCTION } from "./suction.js";
+import { MOWER } from "./mower.js";
 export { type DpCatalog, EMPTY_DP_CATALOG } from "./dp-catalog.js";
 import { DISPLAY } from "./display.js";
 import { LOCATE } from "./locate.js";
@@ -117,8 +118,10 @@ import type { VacuumCleanActions } from "./vacuum-clean.js";
 import type { VacuumDockActions } from "./vacuum-dock.js";
 import type { DisplayActions } from "./display.js";
 import type { SuctionActions } from "./suction.js";
+import type { MowerActions } from "./mower.js";
 import type { LocateActions } from "./locate.js";
 import type { DeviceInfo } from "./info.js";
+import type { CusPushAlarmType } from "../push-events.js";
 
 /** Every capability module, in a stable order (governs `mergeProperties`/`buildCommand` precedence). */
 const MODULES: CapabilityModule[] = [
@@ -146,6 +149,7 @@ const MODULES: CapabilityModule[] = [
   VACUUM_CLEAN,
   VACUUM_DOCK,
   SUCTION,
+  MOWER,
   LOCATE,
   DISPLAY,
   INFO,
@@ -695,8 +699,11 @@ export interface DeviceEventMap {
    * can be known about a value nothing pushes.
    */
   cameraEnabledChanged: PushSemanticEvent;
-  /** Station alarm lifecycle; `phase` says whether it fired or is counting down. */
-  alarm: PushSemanticEvent & { phase?: "triggered" | "delayed" };
+  /**
+   * Station alarm lifecycle; `phase` says whether it fired, is counting down, or was stopped. `type` is
+   * the push's alarm source or stop reason, absent when the push carried none.
+   */
+  alarm: PushSemanticEvent & { phase?: "triggered" | "delayed" | "stopped"; type?: CusPushAlarmType };
   /** Lock (un)locked or a lock alarm fired. */
   lockState: PushSemanticEvent;
   /**
@@ -813,6 +820,8 @@ export interface DeviceActionMap {
   vacuumDock: VacuumDockActions;
   /** RoboVac suction: `level`, `boostIq`, `supportedLevels`; `setSuctionLevel`, `setBoostIq`. */
   suction: SuctionActions;
+  /** Robot mower (read-only): `battery`, `cutHeight`, `network`, `wifiSignal`, wear timers and settings. No write is captured. */
+  mower: MowerActions;
   /** RoboVac locate (find-robot beep): `locating`; `locate(on?)`. */
   locate: LocateActions;
   /** Smart Display (read-only): `battery`. No display write is captured. */
@@ -1039,6 +1048,7 @@ export type {
   RtspActions,
   VacuumCleanActions,
   SuctionActions,
+  MowerActions,
   LocateActions,
 };
 /**
@@ -1069,6 +1079,7 @@ export { SMART_LIGHT_MEMBERS } from "./smart-light.js";
 export { SMOKE_MEMBERS } from "./smoke.js";
 export { DISPLAY_MEMBERS, type DisplayActions } from "./display.js";
 export { SUCTION_MEMBERS } from "./suction.js";
+export { MOWER_MEMBERS } from "./mower.js";
 export { VACUUM_CLEAN_MEMBERS } from "./vacuum-clean.js";
 // The read-only identity metadata object returned by `dev.info()` — a public consumer type.
 export type { DeviceInfo } from "./info.js";
