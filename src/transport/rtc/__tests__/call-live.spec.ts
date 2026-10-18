@@ -214,6 +214,7 @@ describe("RtcCallLiveStream", () => {
       width: 0,
       height: 0,
       sourceTimestamp: 9000,
+      sourceClockRate: 90_000,
     });
     expect(s.frames[0]!.data).toEqual(
       Buffer.concat([Buffer.from([0, 0, 0, 1]), SPS, Buffer.from([0, 0, 0, 1]), PPS, Buffer.from([0, 0, 0, 1]), IDR]),

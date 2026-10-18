@@ -538,6 +538,11 @@ export type VideoCodec = "h264" | "h265" | "av1";
 export interface LiveVideoFrame {
   /** Source-reported unsigned 32-bit timestamp; unit and clock origin are unspecified. */
   sourceTimestamp?: number;
+  /**
+   * Ticks per second of {@link sourceTimestamp}, present where the producer knows its clock: 90000 for the
+   * RTP timestamp of a WebRTC call. Absent on P2P frames, whose header states no unit.
+   */
+  sourceClockRate?: number;
   /** True on an IDR — a unit a consumer may begin decoding at, never a continuation of an earlier one. */
   keyframe: boolean;
   /**

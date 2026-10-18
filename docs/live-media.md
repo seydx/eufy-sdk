@@ -73,6 +73,7 @@ stream.on("video", (frame) => {
   //                            within a session; `video-config` is the authority)
   // frame.keyframe  true on an IDR (a valid resync/segment boundary)
   // frame.sourceTimestamp  optional source-reported u32 timestamp; unit/clock origin unspecified
+  // frame.sourceClockRate  ticks per second of sourceTimestamp, where known (90000 on an RTP call)
 });
 stream.on("audio", (frame) => {
   // frame.codec   "aac-lc" | "aac-eld" | "g711a"

@@ -14,6 +14,8 @@ import type { RtcPeerOptions } from "./peer.js";
 import type { RtcSession } from "./session.js";
 
 const START_CODE = Buffer.from([0, 0, 0, 1]);
+/** The RTP clock of H.264 video (RFC 6184), which the call's `sourceTimestamp` counts in. */
+const RTP_VIDEO_CLOCK_RATE = 90_000;
 
 /**
  * H.264 RTP depacketizer (RFC 6184 single NAL / STAP-A / FU-A). Feed whole RTP packets; it calls `onUnit`
@@ -123,6 +125,7 @@ export class RtcCallLiveStream extends EventEmitter implements LiveStreamHandle 
       width: 0,
       height: 0,
       sourceTimestamp: timestamp,
+      sourceClockRate: RTP_VIDEO_CLOCK_RATE,
     };
     this.emit("video", frame);
   }
