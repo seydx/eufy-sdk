@@ -287,6 +287,14 @@ describe("doorbell — confirmed against real T8214", () => {
     expect(r.name).toBe("Wired Doorbell 2K");
   });
 
+  it("types the T90S0 smoke alarm as a smoke sensor, not a camera", () => {
+    const r = resolveDevice({ model: "T90S0", name: "Hallway" });
+    expect(r.codec).toBe("sensor");
+    expect(r.capabilities).toContain("smoke");
+    expect(r.capabilities).not.toContain("camera");
+    expect(r.capabilities).not.toContain("video");
+  });
+
   it("types the battery T8213 as a doorbell", () => {
     // Without its registry row the raw T-code missed the doorbell model hint, so a T8213's presses
     // arrived but the host built no doorbell event or ring trigger (ha-eufy-sdk#38).

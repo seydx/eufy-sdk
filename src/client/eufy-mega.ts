@@ -76,7 +76,7 @@ import {
   type DeviceInspection,
   type RawParams,
 } from "../model/index.js";
-import { isHomeBase, isNvrT8N00, isStation9000, isTuyaVacuum } from "../model/device-family.js";
+import { isDoorbellT8223, isHomeBase, isNvrT8N00, isStation9000, isTuyaVacuum } from "../model/device-family.js";
 import { cameraPowerTier } from "../model/capabilities/battery.js";
 import { DeviceRegistry, type DeviceRecord, type ParamChange } from "./device-registry.js";
 import type {
@@ -686,18 +686,22 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * Read every Tuya clean-line device's DPs from the Tuya cloud and deliver them as realtime state. A
-   * failed read is reported, not fatal, and leaves that device's state as it was.
+   * Read every Tuya clean-line device's DPs from the Tuya cloud and deliver them as realtime state,
+   * concurrently. A failed read is reported, not fatal, and leaves that device's state as it was.
    */
-  private readTuyaDevices(): void {
-    for (const d of this.getMqttDevices().filter(isTuyaVacuum)) {
-      this.tuya
-        .fetchDps(d.sn)
-        .then((dps) => {
-          if (dps) this.tuyaDpRouter.deliver(d.sn, dps);
-        })
-        .catch((e) => this.reportError(e));
-    }
+  private async readTuyaDevices(): Promise<void> {
+    await Promise.all(
+      this.getMqttDevices()
+        .filter(isTuyaVacuum)
+        .map((d) =>
+          this.tuya
+            .fetchDps(d.sn)
+            .then((dps) => {
+              if (dps) this.tuyaDpRouter.deliver(d.sn, dps);
+            })
+            .catch((e) => this.reportError(e)),
+        ),
+    );
   }
 
   /**
@@ -1139,7 +1143,7 @@ export class EufyMega extends EventEmitter {
   /**
    * The station a device's commands go through: the device itself, or the HomeBase the registry links it
    * to. Answers the target record, the station record and serial, the station's `device_type`, and the
-   * `t9000` / `t8n00` family flags.
+   * `t9000` / `t8n00` / `t8223` family flags.
    */
   private stationOf(sn: string) {
     const devices = this.registry.list();
@@ -1149,7 +1153,16 @@ export class EufyMega extends EventEmitter {
     const raw = (station?.raw ?? {}) as { device_type?: unknown; member?: { admin_user_id?: unknown } };
     const deviceType = typeof raw.device_type === "number" ? raw.device_type : undefined;
     const family = { deviceType, model: station?.model };
-    return { target, station, stationSn, raw, deviceType, t9000: isStation9000(family), t8n00: isNvrT8N00(family) };
+    return {
+      target,
+      station,
+      stationSn,
+      raw,
+      deviceType,
+      t9000: isStation9000(family),
+      t8n00: isNvrT8N00(family),
+      t8223: isDoorbellT8223(family),
+    };
   }
 
   /** The vendor DeviceType of the station a device hangs off; `undefined` for a station itself. */
@@ -1208,7 +1221,8 @@ export class EufyMega extends EventEmitter {
    * kind and stays transport-agnostic; only the facade sees both sides and decides here. A T9000 or T8N00
    * station and the devices attached to it go over RTC, with an attached device's command refused
    * unless its channel resolves back to it on the station. T8N00 uses full SDP and admits direct and
-   * relay candidates; T9000 retains compact SDP and relay-only candidates. Everything else is P2P.
+   * relay candidates; T9000 retains compact SDP and relay-only candidates. A T8223 doorbell's route serves
+   * media only, and the RTC router refuses a command on it. Everything else is P2P.
    */
   private routeCommand(sn: string, cmd: Command): Promise<void> {
     if (cmd.kind === "ff09-actuate" || cmd.kind === "ff09-autolock" || cmd.kind === "ff09-setting-toggle") {
@@ -1235,25 +1249,30 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * The RTC route for a T9000 or T8N00 station or a device attached to one, decided by the station's model
-   * classification; `undefined` for any other device. A T8N00 route carries its native `call` signalling. The admin id is the station's
-   * `member.admin_user_id`, else the logged-in user.
+   * The RTC route for a T9000 or T8N00 station or a device attached to one, or a T8223 doorbell that is its
+   * own station, decided by the station's model classification; `undefined` for any other device. A T8N00
+   * route carries its native `call` signalling; a T8223 route does too, and streams its video on a media
+   * track. The admin id is the station's `member.admin_user_id`, else the logged-in user.
    */
   private rtcRouteFor(sn: string): RtcRoute | undefined {
-    const { target, station, stationSn, raw, t9000, t8n00: native } = this.stationOf(sn);
-    if (!target || !station || !(t9000 || native)) return undefined;
+    const { target, station, stationSn, raw, t9000, t8n00: native, t8223 } = this.stationOf(sn);
+    const doorbell = t8223 && stationSn === sn;
+    if (!target || !station || !(t9000 || native || doorbell)) return undefined;
     const member = raw.member?.admin_user_id;
     const adminUserId = typeof member === "string" && member ? member : undefined;
     const base: RtcRoute = { stationSn, adminUserId, attached: stationSn !== sn };
+    if (doorbell) return { ...base, signalingMode: "call", iceTransportPolicy: "all", mediaTrack: true };
     return native ? { ...base, signalingMode: "call", iceTransportPolicy: "all" } : base;
   }
 
   /**
-   * The RTC media provider for a camera attached to a T9000 whose `device_channel` resolves back to it on
-   * the station; `undefined` otherwise, including a camera behind a T8N00, whose route carries commands only.
+   * The RTC media provider for a station on a media-track route, or a camera attached to a T9000 whose
+   * `device_channel` resolves back to it on the station; `undefined` otherwise, including a camera behind
+   * a T8N00, whose route carries commands only.
    */
   private rtcMediaFor(sn: string): MediaProvider | undefined {
     const route = this.rtcRouteFor(sn);
+    if (route?.mediaTrack) return this.rtc.trackMediaProviderFor(route);
     if (!route?.attached || route.signalingMode === "call") return undefined;
     const raw = (this.registry.list().find((d) => d.sn === sn)?.raw ?? {}) as { device_channel?: unknown };
     const channel = typeof raw.device_channel === "number" ? raw.device_channel : undefined;
@@ -1465,7 +1484,7 @@ export class EufyMega extends EventEmitter {
     try {
       if (!this.registry.list().length) await this.getDevices();
       if (epoch !== this.realtimeEpoch) return this.settleRealtimeGeneration(generation, "superseded");
-      this.readTuyaDevices();
+      void this.readTuyaDevices();
       const scopes = this.mqttScopesInUse();
       readiness.mqtt = createPlaneReadiness(scopes.length);
       let push: PushClient | undefined;
@@ -1612,6 +1631,11 @@ export class EufyMega extends EventEmitter {
    * an unchanged VALUE, which is no state change to report but is fresh proof the device is alive. A
    * device absent from the previous pass is skipped — first sight is discovery, not a transition;
    * {@link deviceState} answers an initial reading.
+   *
+   * Then re-reads every Tuya clean-line robot from the Tuya cloud ({@link readTuyaDevices}): its state
+   * is not in the cloud record this pass diffs and no live channel carries it, so the poll is where it
+   * stays fresh. That read runs after the `try`, not inside it, so a cloud error on the list diff does
+   * not skip it; it reports its own failures and never rejects.
    */
   private async pollOnce(): Promise<void> {
     try {
@@ -1627,6 +1651,7 @@ export class EufyMega extends EventEmitter {
     } catch (e) {
       this.reportError(e);
     }
+    await this.readTuyaDevices();
   }
 
   /**

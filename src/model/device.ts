@@ -98,17 +98,18 @@ function coerceByType(
   }
 }
 
+/** The string forms a boolean takes on the wire; anything else on a `bool` property is not a boolean. */
+const BOOL_WIRE = new Set(["0", "1", "true", "false"]);
+
+/** Coerce one wire value to its property's declared type. */
 function coerce(
   spec: PropertySpec,
   raw: string | number | boolean,
   invert = false,
   logger: Logger = noopLogger,
 ): boolean | number | string {
-  // A custom decode (e.g. a bitfield the app reinterprets) fully owns the value — no type-coerce/invert.
   if (spec.decode) return spec.decode(raw);
-  // A structured payload is stored verbatim and read by the capability's getter, so its declared type
-  // describes the ANSWER and not the wire. Coercion still runs — a base64 string is not a number, so it
-  // passes through unchanged — but it is not a mistake worth logging. See `PropertySpec.raw`.
+  if (spec.raw && spec.type === "bool" && typeof raw === "string" && !BOOL_WIRE.has(raw)) return raw;
   const v = coerceByType(spec.type, raw, spec.name, spec.raw ? noopLogger : logger);
   // A `bool` param that is a disable flag reads inverted ("0"/false ⇒ TRUE). `invert` comes from
   // the spec (its own paramType) or the matched read-alias — see specByParam construction.

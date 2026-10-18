@@ -1,5 +1,5 @@
 import { enumLabels } from "../../core/util.js";
-import { describeDevice, setJsonRaw, setPayload } from "./access.js";
+import { describeDevice, setJsonRaw, setPayload, setStationScalar } from "./access.js";
 import { accepts, method, propertiesOf, type Members, type Surface } from "./members.js";
 import type { CapabilityModule, CapabilityStateReader, CommandContext, InboundSignal } from "./types.js";
 import { CusPushAlarmType, CusPushEvent } from "../push-events.js";
@@ -85,6 +85,8 @@ export const ARMING_CMD = {
    * The ENCRYPTION LEVEL is the session's to pick (`"auto"`), not this command's: the T8030 the envelope
    * was captured on holds a level-2 key and seals it level-2, while an own-session camera that never
    * negotiates one carries the same envelope level-1. See `armingCommand`.
+   *
+   * A T8410C takes the mode as a direct frame instead of this envelope; see {@link DIRECT_ARMING_MODELS}.
    */
   SET_ARMING: 1224,
   /**
@@ -143,6 +145,21 @@ export type DeviceNotificationMode = Extract<ArmingMode, "home" | "away" | "cust
  * their flags (2026-10-12), so they are read only.
  */
 const STANDALONE_ACTION_MODELS: ReadonlySet<string> = new Set(["T8170", "T8171"]);
+
+/**
+ * The models whose guard-mode write is the direct frame: outer command 1224 itself at level 2, body
+ * `u32 LE mode_type ‖ admin account id zero-padded to 128 bytes` (the `p2p-station-scalar` frame), rather
+ * than the `1350` set-payload envelope. Taken from the vendor app's own frame on a T8410C, where Home
+ * (`mode_type` 1) and Away (`mode_type` 0) were captured and decrypted 2026-10-17, and where the camera
+ * answers the `1350` form with result -103 at both level 1 and level 2. Away (0), Home (1) and Disarmed
+ * (63) were each also sent as this frame live on 2026-10-17: the camera answered each on outer 1224 with
+ * result 0 and param 1224 reported the requested mode within the readback window. Only those three modes
+ * are written on this frame ({@link DIRECT_ARMING_MODES}). No other model is confirmed for this frame.
+ */
+const DIRECT_ARMING_MODELS: ReadonlySet<string> = new Set(["T8410C"]);
+
+/** The modes confirmed on the direct frame; any other throws. */
+const DIRECT_ARMING_MODES: ReadonlySet<ArmingMode> = new Set<ArmingMode>(["away", "home", "disarmed"]);
 
 /** The standalone cameras whose own flags are read live: the two above plus the three that stay read only. */
 const STANDALONE_READ_MODELS: ReadonlySet<string> = new Set([...STANDALONE_ACTION_MODELS, "T8400", "T8442", "T8410"]);
@@ -247,6 +264,12 @@ function armingModeOf(v: boolean | number | string): ArmingMode | undefined {
 function armingCommand(mode: ArmingMode, ctx: CommandContext): Command {
   if (!ctx.accountName) {
     throw new Error(`arming: missing account identity (user_name) [${describeDevice(ctx)}]`);
+  }
+  if (DIRECT_ARMING_MODELS.has(ctx.model ?? "")) {
+    if (!DIRECT_ARMING_MODES.has(mode)) {
+      throw new Error(`arming: mode ${mode} is unconfirmed on the direct 1224 frame [${describeDevice(ctx)}]`);
+    }
+    return setStationScalar(ARMING_CMD.SET_ARMING, ARMING_MODE_WIRE[mode], ctx.channel);
   }
   return setPayload(
     ARMING_CMD.SET_ARMING,
@@ -410,7 +433,8 @@ export const ARMING_MEMBERS = {
       "Guard mode (verified: param 1224 = GUARD_MODE, read/write mechanism confirmed). Reads and SETS all " +
       "9 modes the app defines — away/home/schedule/custom1/custom2/custom3/off/geo/disarmed. Three are " +
       "byte-captured writes and six are live-confirmed (each sent and observed to report its own " +
-      "MODE_SWITCH); see ARMING_MODE_WIRE in arming.ts for the per-value evidence.",
+      "MODE_SWITCH); see ARMING_MODE_WIRE in arming.ts for the per-value evidence. On a T8410C only " +
+      "away, home and disarmed are writable.",
     observation: {
       event: "armingModeChanged",
       reflects: (value) => ({ param: ARMING_CMD.SET_ARMING, expected: ARMING_MODE_WIRE[armingModeOf(value)!] }),

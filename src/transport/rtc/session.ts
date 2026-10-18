@@ -17,6 +17,9 @@
  * the signalling socket drops or {@link RtcSession.close} is called, even while the peer connection is
  * nominally up.
  *
+ * A session whose peer is a {@link RtcPeerOptions.mediaTrack} peer has no command channel: `close` fires
+ * when the peer fails or closes, and the video track's packets are emitted as `rtp`.
+ *
  * Both the signalling client and the peer are injectable.
  */
 
@@ -46,6 +49,8 @@ export interface RtcSessionEvents {
   mediaData: [frame: Buffer];
   /** The hub echoed the portal keepalive on the command channel. */
   keepaliveEcho: [];
+  /** One packet of the video track, in a {@link RtcPeerOptions.mediaTrack} session. */
+  rtp: [packet: Buffer];
 }
 
 interface CallPayload {
@@ -78,6 +83,7 @@ export class RtcSession extends EventEmitter<RtcSessionEvents> {
     this.logger = opts.logger ?? noopLogger;
     this.signaling = (opts.createSignaling ?? ((o) => new RtcSignalingClient(o)))(opts);
     this.peer = (opts.createPeer ?? ((o) => new RtcPeer(o)))({ logger: this.logger, ...opts.peer });
+    const mediaTrack = opts.peer?.mediaTrack === true;
 
     this.signaling.on("message", (inner) => {
       this.chain = this.chain
@@ -107,13 +113,14 @@ export class RtcSession extends EventEmitter<RtcSessionEvents> {
       this.announceClose();
     });
     this.peer.on("connectionState", (state) => {
-      if ((state === "failed" || state === "closed") && this.connected) {
+      if ((state === "failed" || state === "closed") && (this.connected || mediaTrack)) {
         this.connected = false;
         this.announceClose();
       }
     });
     this.peer.on("error", (e) => this.emit("error", e));
     this.peer.on("keepaliveEcho", () => this.emit("keepaliveEcho"));
+    this.peer.on("rtp", (packet) => this.emit("rtp", packet));
     this.peer.on("data", (frame, linkType) => {
       if (linkType === PortalLinkType.LIVE) this.emit("mediaData", frame);
       else this.emit("commandData", frame, linkType);

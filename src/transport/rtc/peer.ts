@@ -12,11 +12,16 @@
  * plays the DTLS client (`active`) and opens its channels on the client's even SCTP stream ids, which
  * is what the hub pairs with.
  *
+ * With {@link RtcPeerOptions.mediaTrack} the remote is a T8223 doorbell instead: its offer bundles an Opus
+ * audio, an H.264 video and an `m=application` section, but it never completes the SCTP association. The
+ * application section is rejected before the offer is applied, no data channel is declared, and the
+ * video m-line's RTP is emitted as `rtp`.
+ *
  * The native peer is injectable.
  */
 
 import { EventEmitter } from "node:events";
-import type { DataChannel, IceServer, PeerConnection, RtcConfig } from "node-datachannel";
+import type { DataChannel, IceServer, PeerConnection, RtcConfig, Track } from "node-datachannel";
 import { noopLogger, type Logger } from "../../core/logger.js";
 import { PORTAL_KEEPALIVE } from "./portal-keepalive.js";
 import { PtcsFramer } from "./ptcs-framer.js";
@@ -25,7 +30,9 @@ import {
   HUB_SDP_MID,
   forceDtlsRole,
   iceCandidateType,
+  midOf,
   pinMaxMessageSize,
+  rejectDataSection,
 } from "./scall-sdp.js";
 
 export interface TurnConfig {
@@ -43,6 +50,11 @@ export interface RtcPeerOptions {
   createPeer?: NativePeerFactory;
   /** Candidate policy for the station's exchange; the default is relay-only. */
   iceTransportPolicy?: "relay" | "all";
+  /**
+   * The remote streams its video as RTP on the offer's video m-line and serves no data channel: the
+   * offer's application section is rejected and the video track's packets are emitted as `rtp`.
+   */
+  mediaTrack?: boolean;
   logger?: Logger;
 }
 
@@ -53,6 +65,8 @@ export interface RtcPeerEvents {
   data: [frame: Buffer, linkType: number];
   /** The hub echoed the portal keepalive on the command channel. */
   keepaliveEcho: [];
+  /** One RTP (or multiplexed RTCP) packet from the offer's video m-line, in a {@link RtcPeerOptions.mediaTrack} peer. */
+  rtp: [packet: Buffer];
   iceCandidate: [candidate: string];
   iceGatheringComplete: [];
   connectionState: [state: string];
@@ -120,6 +134,8 @@ export class RtcPeer extends EventEmitter<RtcPeerEvents> {
   private remoteMid = HUB_SDP_MID;
   private handlingOffer = false;
   private channelsCreated = false;
+  private videoMid?: string;
+  private videoTrack?: Track;
   private gatheringDone = false;
   /** Set by the framer's wire callback when the native channel refused a packet mid-send. */
   private wireSendFailed = false;
@@ -167,6 +183,7 @@ export class RtcPeer extends EventEmitter<RtcPeerEvents> {
       this.emit("connectionState", state);
     });
     pc.onDataChannel((dc) => this.wireChannel(dc.getLabel(), dc));
+    if (this.opts.mediaTrack) pc.onTrack((track) => this.wireVideoTrack(track));
   }
 
   /**
@@ -177,7 +194,9 @@ export class RtcPeer extends EventEmitter<RtcPeerEvents> {
    * only what is announced. The offer goes in before the channels are declared: `createDataChannel` on
    * a peer without a remote description starts its own negotiation and leaves it in `have-local-offer`.
    * The data channels need no m-line of their own; the offer's SCTP m-line carries them. Only an ANSWER
-   * is taken as the local description: one read in `have-local-offer` is an offer.
+   * is taken as the local description: one read in `have-local-offer` is an offer. A
+   * {@link RtcPeerOptions.mediaTrack} peer applies the offer with its application section rejected,
+   * declares no channels, and adds remote candidates on the offer's first (bundle-tagged) mid.
    */
   async handleRemoteOffer(offerSdp: string): Promise<string> {
     const pc = this.pc;
@@ -185,9 +204,13 @@ export class RtcPeer extends EventEmitter<RtcPeerEvents> {
     if (this.handlingOffer) throw new Error("RTC peer already handling an offer");
     this.handlingOffer = true;
     try {
-      const offer = forceDtlsRole(offerSdp, "passive");
-      const application = offer.split(/(?=^m=)/m).find((section) => section.startsWith("m=application "));
-      this.remoteMid = application?.match(/^a=mid:([^\r\n]+)/m)?.[1] ?? HUB_SDP_MID;
+      const media = this.opts.mediaTrack === true;
+      const pinned = forceDtlsRole(offerSdp, "passive");
+      const offer = media ? rejectDataSection(pinned) : pinned;
+      this.remoteMid = media
+        ? (offer.match(/^a=mid:([^\r\n]+)/m)?.[1]?.trim() ?? HUB_SDP_MID)
+        : (midOf(offer, "application") ?? HUB_SDP_MID);
+      if (media) this.videoMid = midOf(offer, "video");
       const answerWait = new Promise<string>((resolve, reject) => {
         const timer = setTimeout(() => {
           this.localAnswer = undefined;
@@ -197,7 +220,7 @@ export class RtcPeer extends EventEmitter<RtcPeerEvents> {
       });
       pc.setRemoteDescription(offer, "offer");
       this.remoteSet = true;
-      this.createChannels();
+      if (!media) this.createChannels();
       const local = pc.localDescription();
       let answer = String(local?.type ?? "").toLowerCase() === "answer" ? (local?.sdp ?? "") : "";
       if (!answer) answer = await answerWait;
@@ -265,6 +288,7 @@ export class RtcPeer extends EventEmitter<RtcPeerEvents> {
     this.pc = undefined;
     this.channels.clear();
     this.channelsCreated = false;
+    this.videoTrack = undefined;
     this.remoteSet = false;
     this.pending.length = 0;
   }
@@ -327,6 +351,14 @@ export class RtcPeer extends EventEmitter<RtcPeerEvents> {
       }
       this.framer?.recvPacket(buf);
     });
+  }
+
+  /** Take the offer's video m-line as the one track whose RTP is emitted; any other track is left alone. */
+  private wireVideoTrack(track: Track): void {
+    if (this.videoTrack || this.videoMid === undefined || track.mid() !== this.videoMid) return;
+    this.videoTrack = track;
+    this.logger.debug(`[rtc] video track ${this.videoMid}`);
+    track.onMessage((msg) => this.emit("rtp", Buffer.isBuffer(msg) ? msg : Buffer.from(msg)));
   }
 
   private addNow(candidate: string): void {

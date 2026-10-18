@@ -244,10 +244,11 @@ export interface PropertySpec {
    * consumable counters are `"number"` over one base64 string, and reading the value as a number is
    * exactly what must NOT happen at ingest.
    *
-   * Storage already keeps such a value intact — a non-numeric string cannot be coerced to a number, so
-   * it is passed through. What this flag changes is that the pass-through stops being reported as a
-   * mistake: a robot reporting ten Raw DPs on every push logged ten warnings a time saying its
-   * properties were misdeclared, which is how a real warning goes unread.
+   * Storage keeps such a value intact: a non-numeric string passes a `number` coercion unchanged, and
+   * on a `bool` property a string that is not a boolean wire form (`"0"`, `"1"`, `"true"`, `"false"`)
+   * is kept rather than read as `false`. The pass-through is not reported as a mistake: a robot
+   * reporting ten Raw DPs on every push logged ten warnings a time saying its properties were
+   * misdeclared, which is how a real warning goes unread.
    */
   raw?: true;
   /**

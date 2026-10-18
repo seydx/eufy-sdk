@@ -1,8 +1,9 @@
 import type { Command } from "../../core/contracts.js";
 import { asBool, enumLabels } from "../../core/util.js";
+import { isStation9000 } from "../device-family.js";
 import { setJson, setPayload, setScalar } from "./access.js";
 import { method, propertiesOf, type Members, type Surface } from "./members.js";
-import type { CapabilityModule, CommandContext, DecodedState, InboundSignal } from "./types.js";
+import type { AvailabilityContext, CapabilityModule, CommandContext, DecodedState, InboundSignal } from "./types.js";
 
 /** The state params this capability owns — its OWN vocabulary, used by no other capability. */
 export const RTSP_PARAM = {
@@ -107,6 +108,16 @@ export type RtspRecordingModeValue = (typeof RtspRecordingMode)[keyof typeof Rts
  */
 export type RtspActions = Surface<typeof RTSP_MEMBERS>;
 
+/**
+ * Whether the publish switch has a wire to this camera. A HomeBase S1 Pro (`STATION_9000`) carries an
+ * attached camera's commands over its WebRTC control channel, which takes only the `1350` and `1700`
+ * envelopes; the switch is a plain scalar, and no other frame for it is captured there. Gating the
+ * `published` member drops its read with its setter, since one availability decision covers both.
+ */
+function publishable(ctx: AvailabilityContext): boolean {
+  return !isStation9000({ deviceType: ctx.stationDeviceType });
+}
+
 /** The RTSP publish switch, both directions — a plain scalar, verified live on both topologies. */
 function publishCommand(on: boolean, ctx: CommandContext): Command {
   return setScalar(RTSP_PARAM.STREAM_SWITCH, on ? 1 : 0, ctx);
@@ -155,6 +166,7 @@ export const RTSP_MEMBERS = {
       "directions (DESCRIBE 404→200 with a real SDP, and back).",
     write: (v, ctx) => publishCommand(asBool(v), ctx),
     aliases: { publish: true, withdraw: false },
+    available: publishable,
   },
   /**
    * The device-reported RTSP URL — the full `rtsp://user:pass@host/path`, carrying the credentials the
@@ -220,6 +232,7 @@ export const RTSP_MEMBERS = {
       (): Promise<void> =>
         sink.dispatch(publishCommand(true, ctx)),
     "Publish the stream.",
+    publishable,
   ),
   /** Withdraw this camera's persistent publication; consumer retries do not ask the SDK to republish it. */
   withdraw: method(
@@ -227,6 +240,7 @@ export const RTSP_MEMBERS = {
       (): Promise<void> =>
         sink.dispatch(publishCommand(false, ctx)),
     "Withdraw the stream.",
+    publishable,
   ),
 
   /**

@@ -56,8 +56,8 @@ describe("rtsp capability module", () => {
   it("publishes and withdraws as a scalar write on the camera's own channel", async () => {
     const { acts: actions, sent } = bind<RtspActions>("rtsp", ctx);
 
-    await actions.publish();
-    await actions.withdraw();
+    await actions.publish!();
+    await actions.withdraw!();
 
     expect(sent).toHaveLength(2);
     for (const cmd of sent) {
@@ -83,9 +83,19 @@ describe("rtsp capability module", () => {
     const attached = { ...ctx, homeBaseAttached: true } as CommandContext;
     const { acts: actions, sent } = bind<RtspActions>("rtsp", attached);
 
-    await actions.publish();
+    await actions.publish!();
 
     expect(sent).toHaveLength(1);
+  });
+
+  it("installs no publish switch, nor its read, on a camera behind a HomeBase S1 Pro, whose control channel cannot carry it", () => {
+    const behindS1Pro = { ...ctx, homeBaseAttached: true, stationDeviceType: 27 } as CommandContext;
+    const { acts: actions } = bind<RtspActions>("rtsp", behindS1Pro);
+
+    expect(actions.publish).toBeUndefined();
+    expect(actions.withdraw).toBeUndefined();
+    expect((actions as Record<string, unknown>).setPublished).toBeUndefined();
+    expect(actions.published).toBeUndefined();
   });
 
   it("toggles authentication through the mode field of the credential payload, sent form:auto", async () => {

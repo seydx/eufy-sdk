@@ -145,6 +145,7 @@ export class SecureMqtt extends EventEmitter implements RealtimeTransport {
     // a module load in front of a TLS connect changes nothing a caller can observe.
     const mqtt = await loadMqtt();
     const c = this.o.credentials;
+    const scope = c.app_name ?? "default";
     const port = c.endpoint_port ?? 8883;
     const pinned = this.o.instanceIp;
     const reconnectPeriod = this.o.reconnectPeriod ?? 5000;
@@ -186,10 +187,11 @@ export class SecureMqtt extends EventEmitter implements RealtimeTransport {
         }
         this.emit("connect");
       });
-      client.on("connect", () => this.logger.info(`[smqtt] connected (${c.app_name ?? "default"})`));
+      client.on("connect", () => this.logger.info(`[smqtt] connected (${scope})`));
       client.on("reconnect", () => this.logger.warn("[smqtt] reconnecting"));
       client.on("close", () => this.emit("disconnect", "close"));
       client.on("error", (err) => {
+        this.logger.warn(`[smqtt] socket error (${scope}): ${err.message}`);
         this.emit("error", err);
         if (!settled) {
           settled = true;

@@ -157,7 +157,10 @@ export class PushClient extends EventEmitter {
     });
     socket.on("data", (d: Buffer) => this.parser.handleData(d));
     socket.on("close", () => this.onClose());
-    socket.on("error", (e) => this.emit("error", e));
+    socket.on("error", (e) => {
+      this.logger.warn(`[push] socket error: ${e.message}`);
+      this.emit("error", e);
+    });
   }
 
   private buildLoginRequest(): Buffer {
