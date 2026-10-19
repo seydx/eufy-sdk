@@ -74,8 +74,13 @@ export type LiveTrace =
    * to serve the channel it was asked for, or being re-issued — and only these phases separate them.
    */
   | { phase: "level2-wait"; waitMs: number }
-  /** The station's level-2 key was negotiated, under the cipher it selected. */
+  /** The station's AES-256-GCM level-2 key was negotiated, under the cipher it selected. */
   | { phase: "level2-ready"; cipherId: number }
+  /**
+   * The station's cipher negotiated only the AES-128-ECB level-2 key of an RSA cipher, under the cipher it
+   * selected. That key seals a level-2 set-payload and nothing else, so this is not `level2-ready`.
+   */
+  | { phase: "level2-set-payload-only"; cipherId: number }
   /**
    * The station's key is not coming, why, and the cipher where a station named one.
    *
@@ -98,7 +103,8 @@ export type LiveTrace =
    * A station's cipher was answered with material for a DIFFERENT cipher, which was used in its place.
    *
    * The one lookup outcome no other phase accounts for: material for the cipher the station named is followed
-   * by `level2-ready` or by `level2-unavailable` with `derivation-failed`, an answer holding none by
+   * by `level2-ready`, `level2-set-payload-only` or `level2-unavailable` with `derivation-failed`, an answer
+   * holding none by
    * `no-cipher-key`, and a lookup that threw is reported as an error. Substituted material derives to
    * nothing and otherwise reads as a station fault. `cipherId` is the cipher the station asked for,
    * `answeredCipherId` the one whose material was used.
