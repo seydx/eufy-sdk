@@ -278,12 +278,22 @@ describe("RtcSession", () => {
     expect(closed).toHaveBeenCalledTimes(1);
   });
 
-  it("surfaces a handler failure as an error instead of an unhandled rejection", async () => {
+  it("ends the session with the peer's failure when the peer cannot be built on the granted relay", async () => {
     const s = await authenticated(setup());
-    s.peer.init.mockRejectedValueOnce(new Error("no native module"));
+    const closes: (Error | undefined)[] = [];
+    s.session.on("close", (err) => closes.push(err));
+    const failure = new Error("no native module", { cause: new Error("load failed") });
+    s.peer.init.mockRejectedValueOnce(failure);
     s.sig.hub({ action: 3, dataType: "scall", data: { status: 100, turn: TURN } });
     await flush();
-    expect(s.errors.map((e) => e.message)).toEqual(["no native module"]);
+    expect(s.errors).toEqual([failure]);
+    expect(closes).toEqual([failure]);
+    expect(s.sig.sendHangup).toHaveBeenCalledOnce();
+    expect(s.peer.close).toHaveBeenCalled();
+    s.sig.hub({ action: 3, dataType: "info", data: { sdp: JSON.stringify(HUB_SDP) } });
+    await flush();
+    expect(s.peer.handleRemoteOffer).not.toHaveBeenCalled();
+    expect(s.errors).toEqual([failure]);
   });
 
   it("hands live-link frames to mediaData and everything else to commandData, and sends raw bytes", async () => {

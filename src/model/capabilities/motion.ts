@@ -358,6 +358,15 @@ export function decodeAiDetectType(value: number): AiDetectFlags {
 }
 
 /**
+ * The `ai_detect_type` bitmask from a stored 1298 value: the bare number, or the numeric
+ * `ai_detect_type` field of the JSON object form. Answers `undefined` for any other shape.
+ */
+function decodeAiDetectTypeParam(raw: unknown): number | undefined {
+  const value = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>).ai_detect_type : raw;
+  return typeof value === "number" && Number.isInteger(value) ? value : undefined;
+}
+
+/**
  * Build the `SET_SNOOZE_TIME` (1271) JSON body (see `MOTION_CMD.SNOOZE_TIME` for the capture
  * citation). `seconds<=0` sends the bare captured "clear" shape (`{snooze_time:0}`, no extra fields —
  * matches the real clear/cancel frame byte-for-byte). A positive duration sends the exact
@@ -531,11 +540,15 @@ export const MOTION_MEMBERS = {
    * 1298 holds the detailed AI-type BITMASK (live-observed: `0x30000` enabled-base | type bits, e.g. a
    * T8425 reads `0x3000f`). Cams also report 1299 (`hbAiDetectType`) but that is a separate, simpler
    * value (1) — NOT this bitmask, so 1298 is the read/write id.
+   *
+   * The value arrives in two shapes, both read by the app's 1298 parser: a bare bitmask, or a JSON
+   * object carrying the same bitmask as `ai_detect_type` (see {@link decodeAiDetectTypeParam}).
    */
   aiDetectType: {
     param: MOTION_CMD.AI_DETECT_TYPE,
-    type: "number",
-    kind: "bitfield",
+    type: "string",
+    decode: decodeAiDetectTypeParam,
+    decodedKind: "bitfield",
     provenance: "verified",
     description:
       "AI detection type bitmask — which classes trigger detection. ✅ Bits decoded live + confirmed " +

@@ -39,8 +39,8 @@ class FakeSession extends EventEmitter {
   echoKeepalive = true;
   /** What to do with a sent packet: "ack" (default), "nack" (errCode 1), "silent", or "close". */
   behaviour: "ack" | "nack" | "silent" | "close" = "ack";
-  /** How connect() behaves: come up (default), throw, or never answer. */
-  static connectMode: "up" | "throw" | "never" | "hang" = "up";
+  /** How connect() behaves: come up (default), throw, never answer, or close with a peer failure. */
+  static connectMode: "up" | "throw" | "never" | "hang" | "peer-fails" = "up";
   constructor(readonly opts: RtcSessionOptions) {
     super();
   }
@@ -53,6 +53,15 @@ class FakeSession extends EventEmitter {
     // "hang": connect() itself never settles — the deadline must still fire.
     if (FakeSession.connectMode === "never") return;
     if (FakeSession.connectMode === "hang") return new Promise<void>(() => {});
+    if (FakeSession.connectMode === "peer-fails") {
+      queueMicrotask(() => {
+        const err = new Error("could not load the native peer", { cause: new Error("module missing") });
+        this.emit("error", err);
+        this.closed = true;
+        this.emit("close", err);
+      });
+      return;
+    }
     queueMicrotask(() => {
       this.connected = true;
       this.emit("connected");
@@ -363,6 +372,29 @@ describe("RtcCommandRouter", () => {
       await rejectsAfter(b, /ACK timed out/, ACK_TIMEOUT_MS);
       expect(s.sent).toHaveLength(3); // nothing was replayed
     }));
+
+  it("rejects a command at once with the failure that closed the session during bring-up", async () => {
+    FakeSession.connectMode = "peer-fails";
+    try {
+      const onError = vi.fn();
+      const { router, sessions } = makeRouter({ onError });
+      await onFakeTimers(async () => {
+        const result = router.dispatchCommand(ST, arming(1)).then(
+          () => undefined,
+          (e: unknown) => e,
+        );
+        await vi.advanceTimersByTimeAsync(0);
+        const err = (await result) as Error;
+        expect(err).toBeInstanceOf(Error);
+        expect(err.message).toBe("could not load the native peer");
+        expect((err.cause as Error).message).toBe("module missing");
+      });
+      expect(sessions[0]!.sent).toHaveLength(0);
+      expect(onError).toHaveBeenCalledOnce();
+    } finally {
+      FakeSession.connectMode = "up";
+    }
+  });
 
   it("fails the bring-up once, with the session closed, when connect() throws or never comes up", async () => {
     FakeSession.connectMode = "throw";

@@ -15,7 +15,8 @@
  *
  * The command data channel is the session: `close` fires once, when the channel closes, the peer fails,
  * the signalling socket drops or {@link RtcSession.close} is called, even while the peer connection is
- * nominally up.
+ * nominally up. A peer that cannot be built when the hub grants the relay ends the session there: the
+ * failure is emitted as `error` and `close` fires carrying it.
  *
  * A session whose peer is a {@link RtcPeerOptions.mediaTrack} peer has no command channel: `close` fires
  * when the peer fails or closes, and the video track's packets are emitted as `rtp`.
@@ -41,7 +42,8 @@ const AUTH_TIMEOUT_MS = 15_000;
 
 export interface RtcSessionEvents {
   connected: [];
-  close: [];
+  /** The session ended; `err` is the failure that ended it, when one did. */
+  close: [err?: Error];
   error: [err: Error];
   /** A reassembled command or notify frame: portal packet bytes + the link type it arrived on. */
   commandData: [frame: Buffer, linkType: number];
@@ -161,6 +163,11 @@ export class RtcSession extends EventEmitter<RtcSessionEvents> {
    * `connect()` still waiting for the signalling auth is rejected and its timer stopped.
    */
   close(): void {
+    this.shutdown();
+  }
+
+  /** {@link RtcSession.close}, with the failure that ended the session handed to `close` when one did. */
+  private shutdown(err?: Error): void {
     if (this.closed) return;
     this.closed = true;
     this.connected = false;
@@ -172,7 +179,7 @@ export class RtcSession extends EventEmitter<RtcSessionEvents> {
     this.signaling.close();
     this.peer.close();
     this.settleAuth(new Error("RTC session closed while waiting for signalling auth"));
-    this.announceClose();
+    this.announceClose(err);
   }
 
   /**
@@ -185,10 +192,10 @@ export class RtcSession extends EventEmitter<RtcSessionEvents> {
     this.signaling.sendInfoCandidate(candidate);
   }
 
-  private announceClose(): void {
+  private announceClose(err?: Error): void {
     if (this.closeAnnounced) return;
     this.closeAnnounced = true;
-    this.emit("close");
+    this.emit("close", err);
   }
 
   private waitForAuth(): Promise<void> {
@@ -246,7 +253,14 @@ export class RtcSession extends EventEmitter<RtcSessionEvents> {
     const status = payload.status;
     if (status === 100 && payload.turn) {
       this.turn = payload.turn;
-      await this.peer.init(payload.turn);
+      try {
+        await this.peer.init(payload.turn);
+      } catch (e) {
+        const err = e instanceof Error ? e : new Error(String(e));
+        this.emit("error", err);
+        this.shutdown(err);
+        return;
+      }
       return;
     }
     if (status === 200) {

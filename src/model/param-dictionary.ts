@@ -609,10 +609,13 @@ export const SECURITY_PARAMS: Record<number, ParamDef> = {
     type: "string",
     provenance: "apk",
   },
+  // A camera answers a bare bitmask; a camera behind an NVR-class hub answers a JSON object carrying
+  // it as `ai_detect_type` beside `ai_switch`, `ai_notification`, `ai_use_global` and `channel`.
   1298: {
     name: "aiDetectType",
-    type: "number",
+    type: "string",
     provenance: "apk",
+    encoding: "json",
   },
   // Cameras and a HomeBase 3 answer a bare number; a HomeBase S1 Pro (T9000) answers a JSON envelope
   // (`{"ai_switch":1,"smart_detection":…,"devlist":[…]}`).
@@ -1494,7 +1497,7 @@ export const CLEAN_PARAMS: Record<number, ParamDef> = {
   },
   155: {
     name: "direction",
-    type: "enum",
+    type: "string",
     provenance: "mega",
   },
   156: {
