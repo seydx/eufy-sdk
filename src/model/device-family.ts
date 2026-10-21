@@ -130,6 +130,8 @@ export const isNvrT8N00 = (ctx: FamilyContext): boolean => ctx.model === "T8N00"
 
 /** PoE cameras whose media is served by their NVR's portal call. */
 export const isNvrMediaCamera = (ctx: FamilyContext): boolean => ctx.model === "T8E00" || ctx.model === "T8P00";
+/** PoE S4 camera with independently streamed fixed and movable optical views. */
+export const isNvrDualLensCamera = (ctx: FamilyContext): boolean => ctx.model === "T8E00";
 /** Video Doorbell C31 (T8223), identified by its reported model. */
 export const isDoorbellT8223 = (ctx: FamilyContext): boolean => ctx.model === "T8223";
 /** Wired doorbell (DeviceType.DOORBELL). */

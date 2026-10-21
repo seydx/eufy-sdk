@@ -78,6 +78,7 @@ import {
 } from "../model/index.js";
 import {
   isNvrMediaCamera,
+  isNvrDualLensCamera,
   isDoorbellT8223,
   isHomeBase,
   isNvrT8N00,
@@ -1209,7 +1210,7 @@ export class EufyMega extends EventEmitter {
         try {
           return await media.snapshotLive(opts);
         } catch (error) {
-          if (!(error instanceof LiveSnapshotUnavailableError)) throw error;
+          if (!(error instanceof LiveSnapshotUnavailableError) || (opts?.view ?? 0) !== 0) throw error;
           const retained = await retainedStill().catch(() => undefined);
           const geometry = retained && jpegGeometry(retained);
           if (!retained || !geometry) throw error;
@@ -1292,7 +1293,10 @@ export class EufyMega extends EventEmitter {
     if (channel === undefined || this.registry.serialForFrame(route.stationSn, channel) !== sn) return undefined;
     if (route.signalingMode === "call") {
       if (!camera || !isNvrMediaCamera(camera)) return undefined;
-      return this.rtc.nvrMediaProviderFor({ ...route, cameraSn: sn, channel });
+      return this.rtc.nvrMediaProviderFor(
+        { ...route, cameraSn: sn, channel },
+        isNvrDualLensCamera(camera) ? [0, 1] : [0],
+      );
     }
     return this.rtc.mediaProviderFor({ ...route, cameraSn: sn, channel });
   }

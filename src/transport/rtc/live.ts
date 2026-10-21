@@ -86,8 +86,10 @@ export interface RtcLiveOptions {
   /** The station's `member.admin_user_id`. */
   accountId: string;
   logger?: Logger;
-  /** NVR media owns and connects its session; uses the portal default sensor. */
+  /** NVR media owns and connects its session. */
   nvr?: boolean;
+  /** Optical view carried by the NVR start request; defaults to 0. */
+  view?: number;
 }
 
 /**
@@ -152,7 +154,7 @@ export class RtcLiveStream extends EventEmitter implements LiveStreamHandle {
             audio_chn: nvr ? this.opts.channel : -1,
             streamtype: 2,
             stitch_mode: 1,
-            chn_list: [{ index: 0, chn: this.opts.channel, sensor: 0, isUps: 0, isClicked: true }],
+            chn_list: [{ index: 0, chn: this.opts.channel, sensor: this.opts.view ?? 0, isUps: 0, isClicked: true }],
             pip_cord: { x1: 0, y1: 0, x2: 0, y2: 0 },
             station_video_type: 6,
             play_id: 1,

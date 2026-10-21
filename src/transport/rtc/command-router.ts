@@ -25,6 +25,7 @@ import {
   type MediaProvider,
   type LiveStreamHandle,
   type SharedSourceHints,
+  type MediaSourceSelection,
 } from "../../core/contracts.js";
 import type { Logger } from "../../core/logger.js";
 import { abortable } from "../abortable.js";
@@ -222,50 +223,56 @@ export class RtcCommandRouter {
   }
 
   /** NVR media uses a dedicated call per camera, independent of station commands. */
-  nvrMediaProviderFor(route: RtcLiveRoute): MediaProvider {
-    return this.callMediaProviderFor(
-      route,
-      route.cameraSn,
-      (session, accountId) =>
-        new RtcLiveStream({
-          session,
-          seg: new SegmentCounter(),
-          stationSn: route.stationSn,
-          channel: route.channel,
-          accountId,
-          logger: this.deps.logger,
-          nvr: true,
-        }),
-      "record is not available over an NVR portal call",
-    );
+  nvrMediaProviderFor(route: RtcLiveRoute, views: readonly number[]): MediaProvider {
+    return {
+      ...this.callMediaProviderFor(
+        route,
+        route.cameraSn,
+        (session, accountId, view) =>
+          new RtcLiveStream({
+            session,
+            seg: new SegmentCounter(),
+            stationSn: route.stationSn,
+            channel: route.channel,
+            accountId,
+            logger: this.deps.logger,
+            nvr: true,
+            view,
+          }),
+        "record is not available over an NVR portal call",
+      ),
+      views,
+    };
   }
 
   /** Share a dedicated-call source and its consumer operations under one route key. */
   private callMediaProviderFor(
     route: RtcRoute,
     key: string,
-    makeStream: (session: RtcSession, accountId: string) => LiveStreamHandle,
+    makeStream: (session: RtcSession, accountId: string, view: number) => LiveStreamHandle,
     recordError: string,
     warmTimeoutMs?: number,
   ): MediaProvider {
-    const sourceFor = (opts: SharedSourceHints & AbortableCall = {}): SharedLiveSource => {
+    const sourceFor = (opts: SharedSourceHints & AbortableCall & MediaSourceSelection = {}): SharedLiveSource => {
       opts.signal?.throwIfAborted();
-      let source = this.callSources.get(key);
+      const view = opts.view ?? 0;
+      const sourceKey = view === 0 ? key : `${key}:view:${view}`;
+      let source = this.callSources.get(sourceKey);
       if (!source) {
         source = new SharedLiveSource({
           makeStream: () => {
             const identity = this.deps.identity();
             if (!identity) throw new Error(`rtc: not logged in, cannot call ${route.stationSn}`);
             const accountId = route.adminUserId || identity.userId;
-            return makeStream(this.newSession(route, accountId, identity), accountId);
+            return makeStream(this.newSession(route, accountId, identity), accountId, view);
           },
-          label: key,
+          label: sourceKey,
           logger: this.deps.logger,
           powered: opts.powered,
           preBufferSeconds: opts.preBufferSeconds,
           warmTimeoutMs,
         });
-        this.callSources.set(key, source);
+        this.callSources.set(sourceKey, source);
       }
       return source;
     };

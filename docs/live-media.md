@@ -16,7 +16,7 @@ also requires snapshot capability evidence and the stored-image cache described 
 
 ## One pull, many consumers
 
-Every consumer of a given camera shares **one** underlying media session (one live pull), fanned out
+Every consumer of a given camera and optical view shares **one** underlying media session (one live pull), fanned out
 to all of them. `cam.live()` twice, a `snapshotLive()` while a `recordFragments()` runs, a
 `openReadable()` alongside a `live()` — all attach to the **same** shared source. There is exactly one
 start on the wire regardless of how many consumers attach.
@@ -62,6 +62,24 @@ T8E00 and T8P00 cameras attached to a T8N00 support `live()`, `openReadable()` a
 `snapshotLive()`. `live()` delivers H.265 video and AAC-LC or G.711 A-law audio;
 `openReadable()` provides video, and `snapshotLive()` captures a fresh still.
 Recording and talkback are not implemented for this route.
+
+`cam.views?.()` reports the optical view identifiers supported by this route: `[0, 1]`
+for the dual-lens T8E00 S4 and `[0]` for the T8P00 E40. On the S4, view `0` is fixed
+and view `1` is movable. Omitting `view` selects `0`.
+
+```ts
+const views = cam?.views?.();
+const fixed = await cam?.live?.({ view: 0 });
+const movable = await cam?.live?.({ view: 1 });
+fixed?.stop();
+movable?.stop();
+```
+
+`live`, `openReadable` and `snapshotLive` accept the same `view` option. Different
+views own independent calls; repeated consumers of one view share its source.
+Stopping one view leaves the other running. An unsupported view rejects with
+`RangeError` before connecting. A secondary-view live snapshot failure propagates
+without substituting a stored thumbnail, whose optical view is unknown.
 
 ## 1. Event stream (low-level)
 

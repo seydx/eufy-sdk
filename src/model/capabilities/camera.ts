@@ -6,7 +6,12 @@ import { AUDIO_CMD } from "./audio.js";
 import { cameraPowerTier } from "./battery.js";
 import { accepts, propertiesOf, provided, type Members, type Surface, type MemberDeps } from "./members.js";
 import type { AvailabilityContext, CapabilityModule, CapabilityActions, CommandContext } from "./types.js";
-import { CameraDisabledError, type Command, type MediaProvider } from "../../core/contracts.js";
+import {
+  CameraDisabledError,
+  type Command,
+  type MediaProvider,
+  type MediaSourceSelection,
+} from "../../core/contracts.js";
 
 /**
  * The P2P **feature-command ids** this camera capability drives (direct-binary switches + `1350`
@@ -519,6 +524,12 @@ function refuseWhenDisabled(ctx: CommandContext, read: (name: string) => { value
     throw new CameraDisabledError(ctx.name ?? ctx.serial);
 }
 
+/** Reject an unavailable optical view before a media pull is requested. */
+function refuseUnsupportedView(media: MediaProvider, opts?: MediaSourceSelection): void {
+  const view = opts?.view ?? 0;
+  if (!(media.views ?? [0]).includes(view)) throw new RangeError(`camera: unsupported optical view ${view}`);
+}
+
 /**
  * Every `camera` feature, declared once. The property schema, the typed getters, the derived setters,
  * the intent routes, the media methods and the descriptions all come out of this table.
@@ -866,6 +877,12 @@ export const CAMERA_MEMBERS = {
     write: (v, ctx) => statusLedCommand(asBool(v), ctx),
   },
 
+  views: provided(
+    "media",
+    (m) => m.views && (() => m.views!),
+    "Optical view identifiers supported by this camera's media route.",
+  ),
+
   /**
    * Media is not a property: it returns DATA rather than moving state, its options are richer than a
    * value, and it exists only on a device bound to a provider. Each is declared once, with its
@@ -895,6 +912,7 @@ export const CAMERA_MEMBERS = {
       isCameraCodec(ctx) &&
       (async (opts?: Parameters<MediaProvider["snapshotLive"]>[0]) => {
         refuseWhenDisabled(ctx, read);
+        refuseUnsupportedView(m, opts);
         return m.snapshotLive({ powered: poweredOf(ctx), ...opts });
       }),
     "Fresh still decoded from a short live burst.",
@@ -904,6 +922,7 @@ export const CAMERA_MEMBERS = {
     (m, { ctx, read }) =>
       async (opts?: Parameters<MediaProvider["live"]>[0]) => {
         refuseWhenDisabled(ctx, read);
+        refuseUnsupportedView(m, opts);
         return m.live({ powered: poweredOf(ctx), ...opts });
       },
     "Open a managed live stream.",
@@ -925,6 +944,7 @@ export const CAMERA_MEMBERS = {
       m.openReadable &&
       (async (opts?: Parameters<NonNullable<MediaProvider["openReadable"]>>[0]) => {
         refuseWhenDisabled(ctx, read);
+        refuseUnsupportedView(m, opts);
         return m.openReadable!({ powered: poweredOf(ctx), ...opts });
       }),
     "Open a node:stream Readable of the live feed.",

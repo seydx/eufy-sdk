@@ -2357,14 +2357,16 @@ export class P2PSession extends EventEmitter {
     this.emit("data", frame);
   }
 
-  private send(addr: Address, type: Buffer, payload?: Buffer, socket = this.socket): void {
+  private send(addr: Address, type: Buffer, payload?: Buffer, socket = this.socket, done?: () => void): void {
     if (!socket) return;
     const packet = frameMessage(type, payload);
     socket.send(packet, addr.port, addr.host, (err) => {
       if (err) this.logger.warn(`[p2p] send err ${addr.host}:${addr.port}`, err.message);
+      done?.();
     });
   }
 
+  /** Finish the END send on the current socket before closing it; send completion is not a peer ACK. */
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
@@ -2387,10 +2389,15 @@ export class P2PSession extends EventEmitter {
     this.liveStartRetransmitTimer = undefined;
     this.unackedLiveStarts.clear();
     this.resetInboundSequencing();
-    if (this.connectAddress) this.send(this.connectAddress, RequestMessageType.END);
+    const socket = this.socket;
+    if (socket && this.connectAddress) {
+      await new Promise<void>((resolve) =>
+        this.send(this.connectAddress!, RequestMessageType.END, undefined, socket, resolve),
+      );
+    }
     await new Promise<void>((resolve) => {
-      if (!this.socket) return resolve();
-      this.socket.close(() => resolve());
+      if (!socket) return resolve();
+      socket.close(() => resolve());
     });
     this.socket = undefined;
     this.emit("close");
