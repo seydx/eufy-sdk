@@ -23,6 +23,7 @@ import {
   type AbortableCall,
   type Command,
   type MediaProvider,
+  type LiveStreamHandle,
   type SharedSourceHints,
 } from "../../core/contracts.js";
 import type { Logger } from "../../core/logger.js";
@@ -211,38 +212,74 @@ export class RtcCommandRouter {
    * session. Recording has no wire here and is refused.
    */
   trackMediaProviderFor(route: RtcRoute): MediaProvider {
-    const sn = route.stationSn;
-    const sourceFor = (hints: SharedSourceHints = {}): SharedLiveSource => {
-      let source = this.callSources.get(sn);
+    return this.callMediaProviderFor(
+      route,
+      route.stationSn,
+      (session) => new RtcCallLiveStream(session, this.deps.logger),
+      `record is not available for ${route.stationSn} over a portal call`,
+      45_000,
+    );
+  }
+
+  /** NVR media uses a dedicated call per camera, independent of station commands. */
+  nvrMediaProviderFor(route: RtcLiveRoute): MediaProvider {
+    return this.callMediaProviderFor(
+      route,
+      route.cameraSn,
+      (session, accountId) =>
+        new RtcLiveStream({
+          session,
+          seg: new SegmentCounter(),
+          stationSn: route.stationSn,
+          channel: route.channel,
+          accountId,
+          logger: this.deps.logger,
+          nvr: true,
+        }),
+      "record is not available over an NVR portal call",
+    );
+  }
+
+  /** Share a dedicated-call source and its consumer operations under one route key. */
+  private callMediaProviderFor(
+    route: RtcRoute,
+    key: string,
+    makeStream: (session: RtcSession, accountId: string) => LiveStreamHandle,
+    recordError: string,
+    warmTimeoutMs?: number,
+  ): MediaProvider {
+    const sourceFor = (opts: SharedSourceHints & AbortableCall = {}): SharedLiveSource => {
+      opts.signal?.throwIfAborted();
+      let source = this.callSources.get(key);
       if (!source) {
         source = new SharedLiveSource({
           makeStream: () => {
             const identity = this.deps.identity();
-            if (!identity) throw new Error(`rtc: not logged in, cannot call ${sn}`);
-            const session = this.newSession(route, route.adminUserId || identity.userId, identity);
-            return new RtcCallLiveStream(session, this.deps.logger);
+            if (!identity) throw new Error(`rtc: not logged in, cannot call ${route.stationSn}`);
+            const accountId = route.adminUserId || identity.userId;
+            return makeStream(this.newSession(route, accountId, identity), accountId);
           },
-          label: sn,
+          label: key,
           logger: this.deps.logger,
-          powered: hints.powered,
-          preBufferSeconds: hints.preBufferSeconds,
-          warmTimeoutMs: 45_000,
+          powered: opts.powered,
+          preBufferSeconds: opts.preBufferSeconds,
+          warmTimeoutMs,
         });
-        this.callSources.set(sn, source);
+        this.callSources.set(key, source);
       }
       return source;
     };
     return {
       live: async (opts) => attachUnlessAborted(sourceFor(opts), opts?.signal),
       openReadable: async (opts) => openReadableFromConsumer(attachUnlessAborted(sourceFor(opts), opts?.signal), opts),
-      snapshotLive: (opts) =>
+      snapshotLive: async (opts) =>
         captureSnapshotFromShared(sourceFor(opts), {
           ...opts,
           logger: this.deps.logger,
           ffmpegPath: this.deps.ffmpegPath,
         }),
       record: async () => {
-        throw new Error(`record is not available for ${sn} over a portal call`);
+        throw new Error(recordError);
       },
     };
   }

@@ -76,7 +76,14 @@ import {
   type DeviceInspection,
   type RawParams,
 } from "../model/index.js";
-import { isDoorbellT8223, isHomeBase, isNvrT8N00, isStation9000, isTuyaVacuum } from "../model/device-family.js";
+import {
+  isNvrMediaCamera,
+  isDoorbellT8223,
+  isHomeBase,
+  isNvrT8N00,
+  isStation9000,
+  isTuyaVacuum,
+} from "../model/device-family.js";
 import { cameraPowerTier } from "../model/capabilities/battery.js";
 import { DeviceRegistry, type DeviceRecord, type ParamChange } from "./device-registry.js";
 import type {
@@ -1273,16 +1280,20 @@ export class EufyMega extends EventEmitter {
 
   /**
    * The RTC media provider for a station on a media-track route, or a camera attached to a T9000 whose
-   * `device_channel` resolves back to it on the station; `undefined` otherwise, including a camera behind
-   * a T8N00, whose route carries commands only.
+   * `device_channel` resolves back to it on the station; `undefined` otherwise, unless an NVR camera has its own dedicated media call.
    */
   private rtcMediaFor(sn: string): MediaProvider | undefined {
     const route = this.rtcRouteFor(sn);
     if (route?.mediaTrack) return this.rtc.trackMediaProviderFor(route);
-    if (!route?.attached || route.signalingMode === "call") return undefined;
-    const raw = (this.registry.list().find((d) => d.sn === sn)?.raw ?? {}) as { device_channel?: unknown };
+    if (!route?.attached) return undefined;
+    const camera = this.registry.list().find((d) => d.sn === sn);
+    const raw = (camera?.raw ?? {}) as { device_channel?: unknown };
     const channel = typeof raw.device_channel === "number" ? raw.device_channel : undefined;
     if (channel === undefined || this.registry.serialForFrame(route.stationSn, channel) !== sn) return undefined;
+    if (route.signalingMode === "call") {
+      if (!camera || !isNvrMediaCamera(camera)) return undefined;
+      return this.rtc.nvrMediaProviderFor({ ...route, cameraSn: sn, channel });
+    }
     return this.rtc.mediaProviderFor({ ...route, cameraSn: sn, channel });
   }
 

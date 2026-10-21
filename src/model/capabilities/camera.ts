@@ -1,7 +1,7 @@
 import { asBool, coerceEnumValue } from "../../core/util.js";
 import { DeviceType } from "../device-types.js";
 import { isIndoorCamera, isIndoorCamMini, isIndoorPanTiltS350 } from "../device-family.js";
-import { setScalar, setPayload, setJson, hasCapability } from "./access.js";
+import { setScalar, setPayload, setJson, isCameraCodec, hasCapability } from "./access.js";
 import { AUDIO_CMD } from "./audio.js";
 import { cameraPowerTier } from "./battery.js";
 import { accepts, propertiesOf, provided, type Members, type Surface, type MemberDeps } from "./members.js";
@@ -561,6 +561,7 @@ export const CAMERA_MEMBERS = {
     type: "bool",
     kind: "boolean",
     provenance: "verified",
+    available: isCameraCodec,
     invert: true,
     invertFor: (ctx) => (isT8410HomeBase3(ctx) ? false : undefined),
     readAliases: [{ paramType: 2001, invert: false }],
@@ -588,6 +589,7 @@ export const CAMERA_MEMBERS = {
     type: "bool",
     kind: "boolean",
     provenance: "apk",
+    available: isCameraCodec,
     description:
       "Rotate the image 180° (ROTATE_IMAGE 1207): false = normal, true = flipped. " +
       "For ceiling/upside-down mounts. Write is a direct param; wire from the app parser (unverified live).",
@@ -605,6 +607,7 @@ export const CAMERA_MEMBERS = {
     kind: "enum",
     enumValues: { 0: "Off", 1: "Timestamp", 2: "Timestamp + Logo" },
     provenance: "verified",
+    available: isCameraCodec,
     description:
       "On-screen watermark/OSD overlay (CMD_SET_DEVS_OSD 1214). ✅ wire verified live (T8425 ch3): " +
       "direct-binary [ch][value 0/1/2] — a 3-value enum, not a bool. Enum labels are best-guess.",
@@ -623,6 +626,7 @@ export const CAMERA_MEMBERS = {
     type: "bool",
     kind: "boolean",
     provenance: "verified",
+    available: isCameraCodec,
     description:
       "Trigger on sound as well as motion (SOUND_DETECTION 6043). ✅ Write confirmed live on a T8410 " +
       "(mains, standalone, own channel): both directions sent through this member and read back on " +
@@ -641,6 +645,7 @@ export const CAMERA_MEMBERS = {
     type: "number",
     kind: "scalar",
     provenance: "verified",
+    available: isCameraCodec,
     description:
       "Sound-detection sensitivity: 1 = lowest, 3 = mid, 5 = highest (SOUND_DETECTION_SENSITIVITY " +
       "6044). ✅ Write confirmed live on a T8410: 1 and 5 sent consecutively through this member and " +
@@ -662,6 +667,7 @@ export const CAMERA_MEMBERS = {
     kind: "enum",
     enumValues: { 1: "Crying", 2: "All Sound" },
     provenance: "verified",
+    available: isCameraCodec,
     description:
       "Which sounds trigger a detection: crying alone, or any sound (SOUND_DETECTION_TYPE 6046). ✅ " +
       "Write confirmed live on a T8410: both values sent consecutively through this member and read " +
@@ -685,6 +691,7 @@ export const CAMERA_MEMBERS = {
     kind: "enum",
     enumValues: { 1: "Text Only", 2: "Included Thumbnail", 3: "Text First, Then Thumbnail" },
     provenance: "verified",
+    available: isCameraCodec,
     description:
       "How much a detection push carries: text only, a thumbnail, or text then a thumbnail " +
       "(CMD_INDOOR_PUSH_NOTIFY_TYPE 6020). All three values wire-verified live on a standalone " +
@@ -710,6 +717,7 @@ export const CAMERA_MEMBERS = {
     kind: "enum",
     enumValues: { 0: "Off", 1: "Infrared", 2: "Full Color" },
     provenance: "verified",
+    available: isCameraCodec,
     description:
       "Night-vision mode (NIGHT_VISION_TYPE 1277): 0 = off, 1 = infrared (B&W), 2 = full colour. " +
       "✅ wire verified live (T8425 ch3): 1350 SET_PAYLOAD, mChannel 0, {channel:N, night_sion:mode}. " +
@@ -740,6 +748,7 @@ export const CAMERA_MEMBERS = {
     kind: "enum",
     enumValues: STREAMING_QUALITY_TIERS,
     provenance: "verified",
+    available: isCameraCodec,
     args: [{ name: "quality", kind: "enum", description: "A tier, or the name it maps to. 0 is Auto." }],
     ...accepts<StreamingQualityName>(),
     description:
@@ -772,6 +781,7 @@ export const CAMERA_MEMBERS = {
     param: CAMERA_CMD.RECORDING_QUALITY_SET,
     type: "string",
     provenance: "verified",
+    available: isCameraCodec,
     decode: (raw) => decodeRecordingQualityTier(raw),
     decodedKind: "enum",
     decodedValues: Object.keys(RECORDING_QUALITY_TIERS).map(Number),
@@ -811,6 +821,7 @@ export const CAMERA_MEMBERS = {
     type: "bool",
     kind: "boolean",
     provenance: "apk",
+    available: isCameraCodec,
     description:
       "Anti-theft detection on/off (1015 APP_CMD_EAS_SWITCH; the app parses it as " +
       "anti_theft_detection_switch). Adaptive scalar {value:0|1}. ⚠️ Replay+readback confirmed on a " +
@@ -833,6 +844,7 @@ export const CAMERA_MEMBERS = {
     kind: "boolean",
     writeOnly: true,
     provenance: "verified",
+    available: isCameraCodec,
     description: "Privacy mode (PRIVACY_MODE 6250) — the multi-frame burst the sink plays.",
     write: (v, ctx) => privacyCommand(asBool(v), ctx.channel),
   },
@@ -846,6 +858,7 @@ export const CAMERA_MEMBERS = {
     type: "bool",
     kind: "boolean",
     provenance: "verified",
+    available: isCameraCodec,
     readAvailable: (ctx) => !hasCapability(ctx, "doorbell"),
     readAliases: [{ paramType: CAMERA_CMD.DOORBELL_LED, available: (ctx) => hasCapability(ctx, "doorbell") }],
     requiresRead: true,
@@ -872,17 +885,18 @@ export const CAMERA_MEMBERS = {
    */
   snapshotStored: provided(
     "media",
-    (m) => m.snapshotStored && (() => m.snapshotStored!()),
+    (m, { ctx }) => isCameraCodec(ctx) && m.snapshotStored && (() => m.snapshotStored!()),
     "Latest validated push thumbnail retained in memory.",
     ["snapshot"],
   ),
   snapshotLive: provided(
     "media",
     (m, { ctx, read }) =>
-      async (opts?: Parameters<MediaProvider["snapshotLive"]>[0]) => {
+      isCameraCodec(ctx) &&
+      (async (opts?: Parameters<MediaProvider["snapshotLive"]>[0]) => {
         refuseWhenDisabled(ctx, read);
         return m.snapshotLive({ powered: poweredOf(ctx), ...opts });
-      },
+      }),
     "Fresh still decoded from a short live burst.",
   ),
   live: provided(
@@ -897,15 +911,17 @@ export const CAMERA_MEMBERS = {
   record: provided(
     "media",
     (m, { ctx, read }) =>
-      async (...args: Parameters<MediaProvider["record"]>) => {
+      isCameraCodec(ctx) &&
+      (async (...args: Parameters<MediaProvider["record"]>) => {
         refuseWhenDisabled(ctx, read);
         return m.record(...args);
-      },
+      }),
     "Record N seconds → an mp4/h264 buffer.",
   ),
   openReadable: provided(
     "media",
     (m, { ctx, read }) =>
+      isCameraCodec(ctx) &&
       m.openReadable &&
       (async (opts?: Parameters<NonNullable<MediaProvider["openReadable"]>>[0]) => {
         refuseWhenDisabled(ctx, read);
@@ -916,6 +932,7 @@ export const CAMERA_MEMBERS = {
   recordFragments: provided(
     "media",
     (m, { ctx, read }) =>
+      isCameraCodec(ctx) &&
       m.recordFragments &&
       ((opts?: Parameters<NonNullable<MediaProvider["recordFragments"]>>[0]) => {
         refuseWhenDisabled(ctx, read);
@@ -925,7 +942,8 @@ export const CAMERA_MEMBERS = {
   ),
   downloadRecording: provided(
     "media",
-    (m) =>
+    (m, { ctx }) =>
+      isCameraCodec(ctx) &&
       m.downloadRecording &&
       ((opts: Parameters<NonNullable<MediaProvider["downloadRecording"]>>[0]) => m.downloadRecording!(opts)),
     "Download a recording the station holds → H.264 and AAC elementary streams.",
@@ -940,6 +958,7 @@ export const CAMERA_MEMBERS = {
   talkback: provided(
     "media",
     (m, { ctx }) =>
+      isCameraCodec(ctx) &&
       m.talkback &&
       ctx.paramIds.has(AUDIO_CMD.AUDIO_SPEAKER) &&
       ((opts?: Parameters<NonNullable<MediaProvider["talkback"]>>[0]) =>
@@ -957,6 +976,7 @@ export const CAMERA: CapabilityModule = {
   detection: { codecs: ["camera"] },
   /** Only the no-argument power verbs, which carry no value for a member to hold. */
   actions({ ctx, sink }: MemberDeps): CapabilityActions {
+    if (!isCameraCodec(ctx)) return {};
     return {
       on: () => sink.dispatch(powerCommand(true, ctx)),
       off: () => sink.dispatch(powerCommand(false, ctx)),

@@ -56,6 +56,13 @@ Worth knowing:
 - `record()` opens its own pull instead of joining the shared source, so it costs a second stream on a
   camera that is already streaming. `recordFragments()` is a shared consumer like everything else.
 
+## T8N00 PoE cameras
+
+T8E00 and T8P00 cameras attached to a T8N00 support `live()`, `openReadable()` and
+`snapshotLive()`. `live()` delivers H.265 video and AAC-LC or G.711 A-law audio;
+`openReadable()` provides video, and `snapshotLive()` captures a fresh still.
+Recording and talkback are not implemented for this route.
+
 ## 1. Event stream (low-level)
 
 The direct escape hatch — raw frames as they arrive.

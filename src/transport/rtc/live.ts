@@ -1,5 +1,5 @@
 /**
- * The live pull of one camera behind a **HomeBase S1 Pro (T9000)**, over the station's control session.
+ * A portal camera live pull: T9000 shares its control session, NVR media owns a dedicated call.
  *
  * Wire, as the portal sends it on the command data channel:
  *
@@ -12,13 +12,14 @@
  *  - A raw, unframed keepalive (a 20-byte prefix and a bare `XZYH 1139`) goes out every ~29 s; the hub
  *    echoes it.
  *
- * The station serves one live view at a time on that play slot, so the router builds at most one pull per
- * station. This is a {@link LiveStreamHandle}: fan-out, backpressure and the start deadline are the
+ * A session serves one live view on that play slot. This is a {@link LiveStreamHandle}:
+ * fan-out, backpressure and the start deadline are the
  * shared live source's.
  */
 import { EventEmitter } from "node:events";
-import type { LiveStreamHandle, LiveVideoFrame } from "../../core/contracts.js";
+import type { LiveAudioFrame, LiveStreamHandle, LiveVideoFrame } from "../../core/contracts.js";
 import type { Logger } from "../../core/logger.js";
+import { AUDIO_CODECS, AUDIO_HEADER_LEN, AUDIO_TYPE_OFFSET, CMD_AUDIO_FRAME } from "../p2p/audio-frame.js";
 import { hasIdr } from "../p2p/annexb.js";
 import { PORTAL_KEEPALIVE, PORTAL_KEEPALIVE_MS } from "./portal-keepalive.js";
 import type { RtcSession } from "./session.js";
@@ -42,7 +43,6 @@ const LIVE_MEDIA = 1300;
 const LIVE_MEDIA_CHANNEL = 101;
 /** The portal's `streamId` for a live view, in the header byte the codec names `isResponse`. */
 const LIVE_STREAM_ID = 1;
-
 /** The media header ahead of the video in a `1300` body. */
 const MEDIA_HEADER_LENGTH = 22;
 /** The header's stream type for HEVC. */
@@ -75,15 +75,19 @@ export interface RtcLiveOptions {
   /** The station's `member.admin_user_id`. */
   accountId: string;
   logger?: Logger;
+  /** NVR media owns and connects its session; uses the portal default sensor. */
+  nvr?: boolean;
 }
 
 /**
  * One camera's live pull. `start()` sends the start; a non-zero start ACK or a closed session ends it with
- * `error`, and `stop()` sends the stop. Frames are `h265` Annex B, keyframes being IDRs.
+ * `error`, and `stop()` sends the stop. Video is H.265 Annex B, keyframes being IDRs.
  */
 export class RtcLiveStream extends EventEmitter implements LiveStreamHandle {
   private running = false;
   private startSegment = -1;
+  private readonly onConnected = () => this.sendStart();
+  private readonly onError = (error: Error) => this.fail(error);
   private keepalive?: ReturnType<typeof setInterval>;
   private width = 0;
   private height = 0;
@@ -101,11 +105,23 @@ export class RtcLiveStream extends EventEmitter implements LiveStreamHandle {
 
   start(): this {
     if (this.running) return this;
-    const { session, seg, accountId } = this.opts;
+    const { session } = this.opts;
     this.running = true;
+    this.startSegment = -1;
     session.on("mediaData", this.onMedia);
     session.on("commandData", this.onCommand);
     session.on("close", this.onClose);
+    if (this.opts.nvr) {
+      session.on("connected", this.onConnected);
+      session.on("error", this.onError);
+      session.connect().catch(this.onError);
+    } else this.sendStart();
+    return this;
+  }
+
+  private sendStart(): void {
+    if (!this.running || this.startSegment !== -1) return;
+    const { session, seg, accountId, nvr } = this.opts;
     this.startSegment = seg.next();
     const sent = session.sendCommand(
       buildPortalPacket({
@@ -122,7 +138,7 @@ export class RtcLiveStream extends EventEmitter implements LiveStreamHandle {
             camera_type: 0,
             key: "",
             msg_id: 116,
-            audio_chn: -1,
+            audio_chn: nvr ? this.opts.channel : -1,
             streamtype: 2,
             stitch_mode: 1,
             chn_list: [{ index: 0, chn: this.opts.channel, sensor: 0, isUps: 0, isClicked: true }],
@@ -135,29 +151,30 @@ export class RtcLiveStream extends EventEmitter implements LiveStreamHandle {
     );
     if (!sent) {
       queueMicrotask(() => this.fail(new Error(`rtc live ${this.tag}: command channel not open`)));
-      return this;
+      return;
     }
     this.keepalive = setInterval(() => {
       if (!session.sendRaw(PORTAL_KEEPALIVE)) this.opts.logger?.warn?.(`[rtc] ${this.tag} keepalive not sent`);
     }, PORTAL_KEEPALIVE_MS);
     this.keepalive.unref?.();
     this.opts.logger?.debug?.(`[rtc] ${this.tag} live start sent`);
-    return this;
   }
 
   stop(): void {
     if (!this.running) return;
     this.teardown();
     const { session, seg, accountId } = this.opts;
-    session.sendCommand(
-      buildPortalPacket({
-        commandId: PORTAL_CMD_SET_PAYLOAD,
-        channel: PORTAL_STATION_CHANNEL,
-        segment: seg.next(),
-        isResponse: LIVE_STREAM_ID,
-        payload: { account_id: accountId, cmd: LIVE_STOP, payload: {} },
-      }),
-    );
+    if (this.startSegment !== -1)
+      session.sendCommand(
+        buildPortalPacket({
+          commandId: PORTAL_CMD_SET_PAYLOAD,
+          channel: PORTAL_STATION_CHANNEL,
+          segment: seg.next(),
+          isResponse: LIVE_STREAM_ID,
+          payload: { account_id: accountId, cmd: LIVE_STOP, payload: {} },
+        }),
+      );
+    if (this.opts.nvr) session.close();
     this.emit("stop");
   }
 
@@ -169,11 +186,14 @@ export class RtcLiveStream extends EventEmitter implements LiveStreamHandle {
     session.off("mediaData", this.onMedia);
     session.off("commandData", this.onCommand);
     session.off("close", this.onClose);
+    session.off("connected", this.onConnected);
+    session.off("error", this.onError);
   }
 
   private fail(err: Error): void {
     if (!this.running) return;
     this.teardown();
+    if (this.opts.nvr) this.opts.session.close();
     this.emit("error", err);
   }
 
@@ -186,7 +206,17 @@ export class RtcLiveStream extends EventEmitter implements LiveStreamHandle {
 
   private onMediaFrame(frame: Buffer): void {
     const h = parsePortalHeader(frame);
-    if (!h || h.commandId !== LIVE_MEDIA || h.channel !== LIVE_MEDIA_CHANNEL) return;
+    if (!h || h.channel !== LIVE_MEDIA_CHANNEL) return;
+    if (h.commandId === CMD_AUDIO_FRAME && this.opts.nvr) {
+      if (h.paramLength !== frame.length - PORTAL_HEADER_LENGTH || h.paramLength <= AUDIO_HEADER_LEN) return;
+      const body = frame.subarray(PORTAL_HEADER_LENGTH);
+      const codec = AUDIO_CODECS[body[AUDIO_TYPE_OFFSET]!];
+      if (body.readUInt32LE(0) !== body.length - AUDIO_HEADER_LEN || (codec !== "aac-lc" && codec !== "g711a")) return;
+      const audio: LiveAudioFrame = { codec, data: body.subarray(AUDIO_HEADER_LEN) };
+      this.emit("audio", audio);
+      return;
+    }
+    if (h.commandId !== LIVE_MEDIA) return;
     if (h.paramLength > frame.length - PORTAL_HEADER_LENGTH) return;
     const media = parseMediaBody(frame.subarray(PORTAL_HEADER_LENGTH, PORTAL_HEADER_LENGTH + h.paramLength));
     if (!media) return;

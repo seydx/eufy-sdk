@@ -612,7 +612,7 @@ describe("camera capability module", () => {
       const { acts, sent } = camera(ctx(0));
       await acts.on();
       await acts.off();
-      await acts.setPrivacy(true);
+      await acts.setPrivacy!(true);
       expect(sent[0]).toMatchObject({ kind: "set-param", form: "auto", value: 0 }); // ON = 0 (default family)
       expect(sent[1]).toMatchObject({ kind: "set-param", form: "auto", value: 1 }); // OFF = 1
       expect(sent[2]).toMatchObject({ kind: "p2p-privacy-burst", enabled: true });
@@ -620,16 +620,16 @@ describe("camera capability module", () => {
 
     it("a derived setter dispatches its member's command; a value the member rejects never reaches the wire", async () => {
       const { acts, sent } = camera(ctx(3));
-      await acts.setWatermark(2);
-      await acts.setRecordingQuality(3);
+      await acts.setWatermark!(2);
+      await acts.setRecordingQuality!(3);
       expect(sent).toHaveLength(2);
       expect(sent[0]).toMatchObject({ param: CAMERA_CMD.SET_DEVS_OSD, value: 2 });
       expect(sent[1]).toMatchObject({ cmd: CAMERA_CMD.RECORDING_QUALITY_SET, payload: { quality: 3 } });
-      await expect(acts.setWatermark(5)).rejects.toThrow("watermark: 5 is not a valid value (must be one of 0/1/2)");
-      await expect(acts.setNightVision(9)).rejects.toThrow(
+      await expect(acts.setWatermark!(5)).rejects.toThrow("watermark: 5 is not a valid value (must be one of 0/1/2)");
+      await expect(acts.setNightVision!(9)).rejects.toThrow(
         "nightVision: 9 is not a valid value (must be one of 0/1/2)",
       );
-      await expect(acts.setRecordingQuality(0)).rejects.toThrow(
+      await expect(acts.setRecordingQuality!(0)).rejects.toThrow(
         "recordingQuality: 0 is not a valid value (must be one of 1/2/3)",
       );
       expect(sent).toHaveLength(2);
@@ -671,6 +671,27 @@ describe("camera capability module", () => {
       };
       expect("openReadable" in camera(ctx(), media).acts).toBe(false);
       expect("downloadRecording" in camera(ctx(), media).acts).toBe(false);
+    });
+
+    it("a lock-codec device carrying camera is offered live view and nothing else", () => {
+      const media: MediaProvider = {
+        snapshotStored: async () => Buffer.alloc(0),
+        snapshotLive: async () => ({ jpeg: Buffer.alloc(0), width: 1, height: 1 }),
+        live: async () => ({}) as never,
+        record: async () => Buffer.alloc(0),
+        openReadable: async () => ({}) as never,
+        recordFragments: () => ({}) as never,
+        downloadRecording: async () => ({}) as never,
+        talkback: async () => ({}) as never,
+      };
+      const evidence = {
+        paramIds: new Set<number>([...Object.values(CAMERA_CMD), 1241, 2001]),
+        capabilities: new Set(["lock", "camera", "snapshot"] as const),
+      };
+      const lock = camera(ctx(0, { codec: "lock", ...evidence }), media).acts as Record<string, unknown>;
+      const offered = Object.keys(lock).filter((k) => typeof lock[k] === "function");
+      expect(offered).toEqual(["live"]);
+      expect(camera(ctx(0, { codec: "camera", ...evidence }), media).acts.setWatermark).toBeTypeOf("function");
     });
 
     it("a stored-recording download passes the pushed recording name and cipher id through unchanged", async () => {
@@ -780,7 +801,7 @@ const _watermark: Exact<typeof cam.watermark, number | undefined> = true;
 
 // Write-only: a setter and no getter, because the device never reports privacy state back.
 const _noPrivacyGetter: Exact<"privacy" extends keyof CameraActions ? true : false, false> = true;
-const _setPrivacy: Exact<Parameters<typeof cam.setPrivacy>[0], boolean> = true;
+const _setPrivacy: Exact<Parameters<NonNullable<typeof cam.setPrivacy>>[0], boolean> = true;
 const _statusLed: Exact<typeof cam.statusLed, boolean | undefined> = true;
 const _setStatusLedOptional: Exact<undefined extends typeof cam.setStatusLed ? true : false, true> = true;
 
@@ -791,9 +812,9 @@ const _recordingQualityWrite: Exact<
   RecordingQualityName | number
 > = true;
 
-// An evidence-gated write is OPTIONAL, so a caller is made to check; an ungated one is not.
+// A gated write is OPTIONAL, so a caller is made to check: by reported evidence, or by codec.
 const _antiTheftOptional: Exact<undefined extends typeof cam.setAntiTheftDetection ? true : false, true> = true;
-const _watermarkRequired: Exact<undefined extends typeof cam.setWatermark ? true : false, false> = true;
+const _watermarkOptional: Exact<undefined extends typeof cam.setWatermark ? true : false, true> = true;
 
 const _snapshotOptional: Exact<undefined extends typeof cam.snapshotStored ? true : false, true> = true;
 const _snapshotReturns: Exact<
@@ -814,7 +835,7 @@ export const _surfaceAssertions = [
   _recordingQualityRead,
   _recordingQualityWrite,
   _antiTheftOptional,
-  _watermarkRequired,
+  _watermarkOptional,
   _snapshotOptional,
   _snapshotReturns,
   _recordArg,

@@ -36,7 +36,7 @@ describe("T8410 power on HomeBase 3", () => {
 
   it("dispatches the bound setter and aliases without confirming against stale 1035", async () => {
     const { acts, sent } = bind<CameraActions>("camera", context());
-    await acts.setEnabled(false);
+    await acts.setEnabled!(false);
     await acts.on();
     await acts.off();
     expect(sent).toMatchObject([
