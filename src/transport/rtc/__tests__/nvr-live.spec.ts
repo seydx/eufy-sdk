@@ -5,7 +5,7 @@ import type { RtcSession } from "../session.js";
 import { RtcCommandRouter, type RtcLiveRoute } from "../command-router.js";
 
 /** Synthetic complete HEVC access unit with frame geometry. */
-function video() {
+function video(stamp = 0) {
   const bytes = Buffer.from("000000012601af0e", "hex");
   const body = Buffer.alloc(22 + bytes.length);
   body.writeUInt32LE(bytes.length);
@@ -13,13 +13,15 @@ function video() {
   body[5] = 1;
   body.writeUInt16LE(3840, 10);
   body.writeUInt16LE(2160, 12);
+  body.writeUInt32LE(stamp, 14);
   bytes.copy(body, 22);
   return Buffer.concat([buildPortalHeader(1300, body.length, 101, 1), body]);
 }
-function audio(type = 2) {
+function audio(type = 2, stamp = 0) {
   const body = Buffer.alloc(20);
   body.writeUInt32LE(4);
   body[5] = type;
+  body.writeUInt32LE(stamp, 8);
   body.fill(0xd5, 16);
   return Buffer.concat([buildPortalHeader(1301, body.length, 101, 1), body]);
 }
@@ -75,6 +77,19 @@ describe("independent NVR media lifetime", () => {
     sessions[0]!.emit("mediaData", audio(7));
     sessions[0]!.emit("mediaData", audio(0).subarray(0, -1));
     expect(sound.mock.calls.map(([frame]) => frame.codec)).toEqual(["aac-lc", "g711a"]);
+    consumer.stop();
+  });
+  it("stamps video and audio with the source timestamp of their media headers", async () => {
+    const { media, sessions } = router();
+    const consumer = await media.nvrMediaProviderFor(route).live();
+    const frames = vi.fn();
+    const sound = vi.fn();
+    consumer.on("video", frames);
+    consumer.on("audio", sound);
+    sessions[0]!.emit("mediaData", video(0x8000_0001));
+    sessions[0]!.emit("mediaData", audio(0, 0x8000_0021));
+    expect(frames.mock.calls[0]![0].sourceTimestamp).toBe(0x8000_0001);
+    expect(sound.mock.calls[0]![0].sourceTimestamp).toBe(0x8000_0021);
     consumer.stop();
   });
   it("shares one camera while keeping another camera independent", async () => {

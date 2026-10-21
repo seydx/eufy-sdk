@@ -19,7 +19,13 @@
 import { EventEmitter } from "node:events";
 import type { LiveAudioFrame, LiveStreamHandle, LiveVideoFrame } from "../../core/contracts.js";
 import type { Logger } from "../../core/logger.js";
-import { AUDIO_CODECS, AUDIO_HEADER_LEN, AUDIO_TYPE_OFFSET, CMD_AUDIO_FRAME } from "../p2p/audio-frame.js";
+import {
+  AUDIO_CODECS,
+  AUDIO_HEADER_LEN,
+  AUDIO_TIMESTAMP_OFFSET,
+  AUDIO_TYPE_OFFSET,
+  CMD_AUDIO_FRAME,
+} from "../p2p/audio-frame.js";
 import { hasIdr } from "../p2p/annexb.js";
 import { PORTAL_KEEPALIVE, PORTAL_KEEPALIVE_MS } from "./portal-keepalive.js";
 import type { RtcSession } from "./session.js";
@@ -47,6 +53,11 @@ const LIVE_STREAM_ID = 1;
 const MEDIA_HEADER_LENGTH = 22;
 /** The header's stream type for HEVC. */
 const STREAM_TYPE_HEVC = 1;
+/**
+ * Byte offset of the source timestamp in a `1300` body: the millisecond count the P2P video header
+ * carries at the same offset, read as its low u32 LE. Read on NVR media, the route it was captured on.
+ */
+const MEDIA_TIMESTAMP_OFFSET = 0x0e;
 
 /**
  * Read a `1300` body: a 22-byte media header (u32 LE video length at 0, stream type at 5, u16 LE width
@@ -212,13 +223,18 @@ export class RtcLiveStream extends EventEmitter implements LiveStreamHandle {
       const body = frame.subarray(PORTAL_HEADER_LENGTH);
       const codec = AUDIO_CODECS[body[AUDIO_TYPE_OFFSET]!];
       if (body.readUInt32LE(0) !== body.length - AUDIO_HEADER_LEN || (codec !== "aac-lc" && codec !== "g711a")) return;
-      const audio: LiveAudioFrame = { codec, data: body.subarray(AUDIO_HEADER_LEN) };
+      const audio: LiveAudioFrame = {
+        codec,
+        data: body.subarray(AUDIO_HEADER_LEN),
+        sourceTimestamp: body.readUInt32LE(AUDIO_TIMESTAMP_OFFSET),
+      };
       this.emit("audio", audio);
       return;
     }
     if (h.commandId !== LIVE_MEDIA) return;
     if (h.paramLength > frame.length - PORTAL_HEADER_LENGTH) return;
-    const media = parseMediaBody(frame.subarray(PORTAL_HEADER_LENGTH, PORTAL_HEADER_LENGTH + h.paramLength));
+    const body = frame.subarray(PORTAL_HEADER_LENGTH, PORTAL_HEADER_LENGTH + h.paramLength);
+    const media = parseMediaBody(body);
     if (!media) return;
     const { data, width, height } = media;
     if (width && height) {
@@ -232,6 +248,7 @@ export class RtcLiveStream extends EventEmitter implements LiveStreamHandle {
       width: this.width,
       height: this.height,
     };
+    if (this.opts.nvr) out.sourceTimestamp = body.readUInt32LE(MEDIA_TIMESTAMP_OFFSET);
     this.emit("video", out);
   }
 }
