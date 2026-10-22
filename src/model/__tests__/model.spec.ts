@@ -330,6 +330,14 @@ describe("doorbell — confirmed against real T8214", () => {
     expect("power" in (dev.smartLight?.() ?? {})).toBe(true);
   });
 
+  it.each([5, 7, 16, 91, 93, 94])("types any record of the app's doorbell deviceType %i as a doorbell", (t) => {
+    expect(resolveDevice({ model: "T8299", deviceType: t }).capabilities).toContain("doorbell");
+  });
+
+  it.each(["T8201", "T8212", "T8220", "T8222"])("types the app's doorbell model %s as a doorbell", (model) => {
+    expect(resolveDevice({ model }).capabilities).toContain("doorbell");
+  });
+
   it("types the T8210C variant as a doorbell, like the T8210", () => {
     const r = resolveDevice({ model: "T8210C", deviceType: 7 });
     expect(r.capabilities).toContain("doorbell");

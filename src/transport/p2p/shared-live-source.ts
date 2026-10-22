@@ -758,16 +758,25 @@ export class SharedLiveSource {
    * at all, audio without a single video frame, or access units a decoder cannot begin at.
    *
    * Video takes precedence when both arrived: audio alongside video says nothing a caller needs, while video
-   * without a keyframe does.
+   * without a keyframe does. Every failed start is built here, so this is where its `start-failed` trace is
+   * emitted.
    */
-  private startFailure(reason: LiveStreamStartFailureReason, cause?: unknown): LiveStreamStartError {
-    return new LiveStreamStartError({
+  private startFailure(reason: LiveStreamStartFailureReason, cause?: Error): LiveStreamStartError {
+    const err = new LiveStreamStartError({
       reason,
       stage: this.delivered.video ? "awaiting-keyframe" : this.delivered.audio ? "audio-only" : "awaiting-first-frame",
       timeoutMs: this.warmTimeoutMs,
       attempts: this.warmAttempts,
       cause,
     });
+    this.trace({
+      phase: "start-failed",
+      reason,
+      stage: err.stage,
+      attempts: err.attempts,
+      ...(cause ? { errorName: cause.name } : {}),
+    });
+    return err;
   }
 
   private onVideo(frame: LiveVideoFrame): void {

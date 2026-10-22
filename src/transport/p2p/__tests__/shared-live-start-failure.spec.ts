@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { LiveStreamStartError } from "../../../core/contracts.js";
+import { LIVE_TRACE_MESSAGE } from "../live-trace.js";
 import { SharedLiveSource } from "../shared-live-source.js";
 import { H264, streamFactory, unit, videoFrame } from "./live-source-fixtures.js";
 
@@ -170,6 +171,26 @@ describe("SharedLiveSource — reporting a failed start", () => {
 
     expect(errors[0]).toMatchObject({ reason: "source-error", cause });
     expect(onStartFailed).toHaveBeenCalledTimes(1);
+  });
+
+  /** The trace carries the failure's closed facts and the upstream error's class name, never its message. */
+  it("traces an upstream error before the first keyframe as start-failed", () => {
+    const debug = vi.fn();
+    const { source, streams } = mk({ logger: { debug, info: vi.fn(), warn: vi.fn(), error: vi.fn() } });
+    source.attach().on("error", () => {});
+
+    streams[0].emit("error", new TypeError("synthetic upstream detail"));
+
+    const traces = debug.mock.calls.filter(([message]) => message === LIVE_TRACE_MESSAGE).map(([, t]) => t);
+    expect(traces).toContainEqual({
+      phase: "start-failed",
+      reason: "source-error",
+      stage: "awaiting-first-frame",
+      attempts: 1,
+      errorName: "TypeError",
+      source: expect.any(String),
+    });
+    expect(JSON.stringify(traces)).not.toContain("synthetic upstream detail");
   });
 
   it("reports an upstream stop that arrives before the first keyframe", () => {

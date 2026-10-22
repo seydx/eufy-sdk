@@ -54,6 +54,7 @@ describe("live-trace vocabulary at the package entry point", () => {
       "media-command-unsent": true,
       "path-stale": true,
       "channel-silent": true,
+      "start-failed": true,
     } satisfies Record<LiveTrace["phase"], true>;
     expect(Object.keys(handled)).toContain("sequence-restart");
   });

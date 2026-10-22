@@ -51,18 +51,16 @@ export const MODEL_REGISTRY: Readonly<Record<string, RegistryEntry>> = {
 
   // Cameras with curated extras that aren't always provable from a fresh device's params.
   T8423: { codec: "camera", caps: ["light", "battery"], name: "Floodlight Cam" },
-  T8210: { codec: "camera", caps: ["doorbell", "battery"], name: "Video Doorbell" },
+  T8210: { codec: "camera", caps: ["battery"], name: "Video Doorbell" },
   // T8210 hardware variant, reported as its own code; shares the T8210 row.
-  T8210C: { codec: "camera", caps: ["doorbell", "battery"], name: "Video Doorbell" },
+  T8210C: { codec: "camera", caps: ["battery"], name: "Video Doorbell" },
   // Confirmed against a real owned unit (named "Doorbell"): Video Doorbell Dual.
-  T8214: { codec: "camera", caps: ["doorbell", "battery"], name: "Video Doorbell Dual" },
-  // Battery Video Doorbell Dual, vendor deviceType 91 (BATTERY_DOORBELL_PLUS), reported by two users.
-  T8213: { codec: "camera", caps: ["doorbell", "battery"], name: "Video Doorbell Dual" },
+  T8214: { codec: "camera", caps: ["battery"], name: "Video Doorbell Dual" },
+  T8213: { codec: "camera", caps: ["battery"], name: "Video Doorbell Dual" },
   // Confirmed against a real owned unit: the mains-powered Wired Doorbell 2K. No `battery` row
   // member on purpose — this model is wired, so the codec baseline plus inference is the whole
-  // truth for power. Without this row it classified as a plain camera, so the doorbell capability
-  // never appeared and consumers got no doorbell event entity or ring trigger.
-  T8200: { codec: "camera", caps: ["doorbell"], name: "Wired Doorbell 2K" },
+  // truth for power.
+  T8200: { codec: "camera", name: "Wired Doorbell 2K" },
 
   // Cameras observed on real owned hardware (inspect-device sweep). Names from the app's own
   // model-family constants (scripts/data/app_model_registry.json); caps mirror what the device
