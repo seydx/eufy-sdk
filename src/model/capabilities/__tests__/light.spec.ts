@@ -65,12 +65,13 @@ describe("light capability module", () => {
   });
 
   it("detects only from real SPOTLIGHT params (NOT 1045 status LED)", () => {
-    // 1045 (status LED, on every camera) must NOT be here — that's `camera`, not `light`.
-    expect(LIGHT.detection?.evidenceParams).not.toContain(1045);
-    expect(LIGHT.detection?.evidenceParams).toEqual(expect.arrayContaining([1400, 6080, 1401]));
-    const re = LIGHT.detection!.modelHints![0];
-    expect(re.test("Floodlight Cam")).toBe(true);
-    expect(re.test("Wired Doorbell")).toBe(false);
+    // Exercise the detector rather than its internal evidence representation.
+    expect(detectCapabilities({ params: { 1045: "1" } }, "camera")).not.toContain("light");
+    for (const param of [1400, 1401, 1403, 6080, 6082, 1413]) {
+      expect(detectCapabilities({ params: { [param]: "1" } }, "camera")).toContain("light");
+    }
+    expect(detectCapabilities({ name: "Floodlight Cam" }, "camera")).toContain("light");
+    expect(detectCapabilities({ name: "Wired Doorbell" }, "camera")).not.toContain("light");
   });
 
   describe("buildCommand — variant resolution", () => {
@@ -126,6 +127,27 @@ describe("light capability module", () => {
         form: "int-string",
         value: 0,
       });
+    });
+
+    it("on/off on a Wall Light Cam S4 / T86C1 (deviceType 298) → set-json floodlight switch (1400)", () => {
+      const t86c1 = { ...ctx(5), deviceType: DeviceType.WALL_LIGHT_CAM_T86C1 };
+      expect(intent("on", true, t86c1)).toEqual({
+        kind: "set-json",
+        param: LIGHT_CMD.FLOODLIGHT_SWITCH,
+        data: { time: 0, type: 2, value: 1 },
+        channel: 5,
+      });
+      expect((intent("off", false, t86c1) as Extract<Command, { kind: "set-json" }>).data).toEqual({
+        time: 0,
+        type: 2,
+        value: 0,
+      });
+    });
+
+    it("does not assign a spotlight switch wire to SoloCam E30", () => {
+      expect(() => intent("on", true, { ...ctx(), deviceType: DeviceType.SOLO_CAMERA_E30 })).toThrow(
+        /light: unknown spotlight switch wire format/,
+      );
     });
 
     it("spotlightEnabled on a T8423 (deviceType 38) → session-chosen level for 1403; brightness stays direct-binary", () => {

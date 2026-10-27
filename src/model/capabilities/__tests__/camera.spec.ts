@@ -13,6 +13,7 @@ import {
   STREAMING_QUALITY_TIERS,
   resolveStreamingQuality,
 } from "../camera.js";
+import { DOORBELL_CMD } from "../doorbell.js";
 import type { RecordingQualityName } from "../camera.js";
 import { buildCommand } from "../index.js";
 import { actionSpecOf } from "../access.js";
@@ -137,6 +138,85 @@ describe("camera capability module", () => {
       const type = buildCommand("soundDetectionType", 1, ctx(0)) as { data: Record<string, unknown> };
       expect(Object.keys(sens.data)).toEqual(["index"]);
       expect(Object.keys(type.data)).toEqual(["type"]);
+    });
+  });
+
+  describe("T8442 night vision (read alias + direct wire)", () => {
+    const t8442 = ctx(2, { model: "T8442", paramIds: new Set([2002]) });
+
+    it("keeps one nightVision property, reads 2002 as Off/Infrared and updates both ways", () => {
+      const dev = Device.fromRecord("TEST-SN", { model: "T8442", params: { 2002: "0" } });
+      const spec = dev.properties.find((p) => p.name === "nightVision");
+      expect(spec).toMatchObject({
+        paramType: 2002,
+        type: "enum",
+        kind: "enum",
+        writable: true,
+        enumValues: { 0: "Off", 1: "Infrared" },
+      });
+      expect(dev.properties.some((p) => p.name === "nightVisionEnabled")).toBe(false);
+      expect(dev.getProperty("nightVision")?.value).toBe(NightVision.Off);
+      dev.applyParams({ 2002: "1" });
+      expect(dev.getProperty("nightVision")?.value).toBe(NightVision.Infrared);
+      dev.applyParams({ 2002: "0" });
+      expect(dev.getProperty("nightVision")?.value).toBe(NightVision.Off);
+      // Even if 1277 appears, the model-specific 2002 alias remains the source of truth.
+      const both = Device.fromRecord("TEST-SN", { model: "T8442", params: { 1277: "2", 2002: "1" } });
+      expect(both.properties.find((p) => p.name === "nightVision")?.paramType).toBe(2002);
+      expect(both.getProperty("nightVision")?.value).toBe(NightVision.Infrared);
+    });
+
+    it("writes 1013 as level-1 int-string for T8442, on and off", () => {
+      expect(buildCommand("nightVision", NightVision.Infrared, t8442)).toEqual({
+        kind: "set-param",
+        param: CAMERA_CMD.IC_NIGHT_VISION_TYPE,
+        value: 1,
+        form: "int-string",
+        channel: 2,
+      });
+      expect(buildCommand("nightVision", NightVision.Off, t8442)).toEqual({
+        kind: "set-param",
+        param: CAMERA_CMD.IC_NIGHT_VISION_TYPE,
+        value: 0,
+        form: "int-string",
+        channel: 2,
+      });
+    });
+
+    it("the bound T8442 setter sends the literal 1013 int-string command", async () => {
+      const { acts, sent } = camera(t8442);
+      await acts.setNightVision!(NightVision.Infrared);
+      expect(sent).toEqual([
+        {
+          kind: "set-param",
+          param: CAMERA_CMD.IC_NIGHT_VISION_TYPE,
+          value: 1,
+          form: "int-string",
+          channel: 2,
+        },
+      ]);
+    });
+
+    it("rejects Full Color on T8442 with a model-specific error", async () => {
+      const message = /nightVision: Full Color is not supported on T8442 \(only Off\/Infrared\)/;
+      expect(() => buildCommand("nightVision", NightVision.FullColor, t8442)).toThrow(message);
+      await expect(camera(t8442).acts.setNightVision!(NightVision.FullColor)).rejects.toThrow(message);
+    });
+
+    it("keeps the 1277 property and 1350 payload for T8425", () => {
+      const older = ctx(3, { model: "T8425", paramIds: new Set([CAMERA_CMD.NIGHT_VISION_TYPE]) });
+      const dev = Device.fromRecord("TEST-SN", { model: "T8425", params: { 1277: "2" } });
+      expect(dev.properties.find((p) => p.name === "nightVision")).toMatchObject({
+        paramType: CAMERA_CMD.NIGHT_VISION_TYPE,
+        enumValues: { 0: "Off", 1: "Infrared", 2: "Full Color" },
+      });
+      expect(dev.getProperty("nightVision")?.value).toBe(NightVision.FullColor);
+      expect(buildCommand("nightVision", NightVision.FullColor, older)).toMatchObject({
+        kind: "set-payload",
+        cmd: CAMERA_CMD.NIGHT_VISION_TYPE,
+        channel: 0,
+        payload: { channel: 3, night_sion: 2 },
+      });
     });
   });
 
@@ -341,6 +421,27 @@ describe("camera capability module", () => {
       });
       expect((cmd as { payload: Record<string, unknown> }).payload.transaction).toMatch(/^\d{13}$/);
       expect(buildCommand("streamingQuality", "Max", ctx(2))).toMatchObject({ payload: { quality: 3 } });
+    });
+
+    it("streamingQuality is not offered where the device reports the doorbell's own quality (1705)", () => {
+      const doorbell = (paramIds: number[]) =>
+        ctx(0, {
+          deviceType: DeviceType.BATTERY_DOORBELL_2,
+          model: "T8210",
+          capabilities: new Set(["camera", "doorbell"]),
+          paramIds: new Set(paramIds),
+        });
+      const withOwn = doorbell([1020, DOORBELL_CMD.VIDEO_QUALITY]);
+      const dev = Device.fromRecord("T8000P0000000000", { model: "T8210", params: { 1020: "5", 1705: "5" } });
+      dev.bindActions(withOwn, { dispatch: async () => undefined });
+      const acts = dev.camera!()!;
+      expect("streamingQuality" in acts).toBe(false);
+      expect("setStreamingQuality" in acts).toBe(false);
+      expect(buildCommand("streamingQuality", 0, withOwn)).toBeUndefined();
+      expect(buildCommand("streamingQuality", 0, doorbell([1020]))).toMatchObject({
+        cmd: CAMERA_CMD.STREAMING_QUALITY_SET,
+      });
+      expect(buildCommand("streamingQuality", 0, ctx(0))).toMatchObject({ cmd: CAMERA_CMD.STREAMING_QUALITY_SET });
     });
 
     it("recordingQuality throws on a value that isn't a real tier (no bogus value on the fire-and-forget wire)", () => {

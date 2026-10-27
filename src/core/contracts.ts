@@ -343,10 +343,11 @@ export class StateConvergenceError extends Error {
 export type ScalarForm = "auto" | "int-string" | "direct-binary";
 
 /**
- * The identity fields the `ff09` frame is built from — the AES key/IV inputs (`adminUserId`/`deviceSn`)
- * plus the frame's own direction bit and user-attribution fields (`A3`/`A4`/`A5`). Shared by the
- * actuate intent; the settings intents carry a narrower subset (the GET/SET frames omit the
- * user-attribution fields).
+ * The identity fields an actuation frame is built from — for `ff09`, the AES key/IV inputs
+ * (`adminUserId`/`deviceSn`) plus the frame's own direction bit and user-attribution fields
+ * (`A3`/`A4`/`A5`); for the keyed-payload envelope, the same five fields, sealed into its inner JSON.
+ * Shared by both actuate intents; the `ff09` settings intents carry a narrower subset (the GET/SET frames
+ * omit the user-attribution fields).
  */
 export interface Ff09Identity {
   /** Actuation direction: `true` = engage (lock / close), `false` = release (unlock / open) — the frame's `A3` byte. */
@@ -414,6 +415,12 @@ export type Command =
   /** P2P int-plus-string frame; the transport injects the authenticated account id string. */
   | { kind: "p2p-int-string"; cmd: number; value: number; valueSub: number; channel: number }
   | ({ kind: "ff09-actuate" } & Ff09Identity)
+  /**
+   * `keyed-payload-actuate` — a `SET_PAYLOAD` envelope whose inner JSON is sealed with a fresh AES key
+   * that the envelope itself carries, wrapped for the device's own public key. P2P-only; the router
+   * resolves the device key and the member display name from the device record.
+   */
+  | ({ kind: "keyed-payload-actuate" } & Ff09Identity)
   | { kind: "ff09-autolock"; adminUserId: string; deviceSn: string; enabled: boolean; delaySeconds?: number }
   | { kind: "ff09-setting-toggle"; adminUserId: string; deviceSn: string; settingId: number; value: boolean }
   // `mqtt-dp` — an `eufy_life` secure-MQTT "DP" TLV write (smart lights + kin). The capability supplies
@@ -755,10 +762,9 @@ export interface LiveStreamConsumer extends LiveStreamHandle {
    * consumer receives, so a consumer holding media it has not been told the configuration of is not a state
    * it can reach.
    *
-   * Per consumer, against what THIS consumer was last given: a consumer that joins mid-session is primed
-   * with a cached keyframe it did not witness arriving, and one that crosses its bound resynchronises onto
-   * a later IDR having skipped the frame the source saw the change on. Announcing what the source saw
-   * would leave both holding an encoder built for media they never received.
+   * Per consumer, against what this consumer was last given: a mid-session join begins at its next live
+   * keyframe, and a consumer crossing its queue bound resynchronises onto a later IDR. Each receives
+   * the configuration of the media it is delivered, even when another consumer has already seen it.
    *
    * Only a consumer announces this, never a bare {@link LiveStreamHandle}: it is read from the parameter
    * sets a shared source watches every frame for, which the raw pull underneath it does not do. That is

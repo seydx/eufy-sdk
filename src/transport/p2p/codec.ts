@@ -17,6 +17,7 @@ import {
   createHmac,
   createPrivateKey,
   privateDecrypt,
+  randomBytes,
   timingSafeEqual,
 } from "node:crypto";
 
@@ -32,7 +33,12 @@ export const MAGIC_WORD = "XZYH";
 export const RequestMessageType = {
   LOCAL_LOOKUP: Buffer.from([0xf1, 0x30]),
   LOOKUP_WITH_KEY: Buffer.from([0xf1, 0x26]),
+  /** `ListReq_DSK`: the same body as a variant-2 lookup, answered with {@link ResponseMessageType.LIST_REQ_ACK}. */
   LOOKUP_WITH_KEY2: Buffer.from([0xf1, 0x6a]),
+  RLY_HELLO: Buffer.from([0xf1, 0x70]),
+  RLY_PORT: Buffer.from([0xf1, 0x72]),
+  RLY_REQ: Buffer.from([0xf1, 0x80]),
+  RLY_PKT: Buffer.from([0xf1, 0x83]),
   CHECK_CAM: Buffer.from([0xf1, 0x41]),
   CHECK_CAM2: Buffer.from([0xf1, 0x42]),
   PING: Buffer.from([0xf1, 0xe0]),
@@ -45,14 +51,24 @@ export const RequestMessageType = {
 export const ResponseMessageType = {
   LOCAL_LOOKUP_RESP: Buffer.from([0xf1, 0x41]),
   LOOKUP_ADDR: Buffer.from([0xf1, 0x40]),
-  LOOKUP_ADDR2: Buffer.from([0xf1, 0x82]),
+  /** The relay servers a cloud lookup server names: `[count:1][pad:3]` then `count` address records. */
+  LIST_REQ_ACK: Buffer.from([0xf1, 0x69]),
+  RLY_HELLO_ACK: Buffer.from([0xf1, 0x71]),
+  /** A relay's answer to RLY_PORT: `[mark:4 BE][port:2 BE][pad:2]`, the port being the one it relays on. */
+  RLY_PORT_ACK: Buffer.from([0xf1, 0x73]),
+  RLY_REQ_ACK: Buffer.from([0xf1, 0x81]),
+  /** A relay endpoint to register with: one address record, then `[handle:4 BE]`. */
+  RLY_TO: Buffer.from([0xf1, 0x82]),
   CAM_ID: Buffer.from([0xf1, 0x42]),
+  /** A lookup server's answer to a P2P request: `[result:1]` first, 0 when the request is accepted. */
+  P2P_REQ_ACK: Buffer.from([0xf1, 0x21]),
   /**
    * The device's own address record, sent in answer to CHECK_CAM ahead of CAM_ID: its 20-byte device id, one
-   * record in `encodeSelfAddress`'s shape naming the address it answers from, then 8 zero bytes (44-byte payload).
+   * record in `encodeAddress`'s shape naming the address it answers from, then 8 zero bytes (44-byte payload).
    */
   CAM_ADDR: Buffer.from([0xf1, 0x43]),
-  TURN_SERVER_CAM_ID: Buffer.from([0xf1, 0x84]),
+  /** A relay reporting the path to the device ready: the device's 20-byte id, sent from the relay endpoint. */
+  RLY_RDY: Buffer.from([0xf1, 0x84]),
   PING: Buffer.from([0xf1, 0xe0]),
   PONG: Buffer.from([0xf1, 0xe1]),
   DATA: Buffer.from([0xf1, 0xd0]),
@@ -233,6 +249,34 @@ export function eciesUnwrap(
   }
 }
 
+/** The two random inputs of {@link eciesWrap}, injectable so a spec can pin an envelope's bytes. */
+export interface EciesWrapOptions {
+  /** The ephemeral P-256 private key for the exchange (32 bytes); generated fresh when absent. */
+  ephemeralPrivateKey?: Buffer;
+  /** The AES-128-CBC IV, which the envelope carries (16 bytes); random when absent. */
+  iv?: Buffer;
+}
+
+/**
+ * The sealing counterpart of {@link eciesUnwrap} with `verifyHmac` and `pkcs7` both set.
+ *
+ * Seals `plaintext` for `peerPublicKey` (a P-256 point, compressed or uncompressed) as
+ * `ephemeralPub(33, compressed) ‖ iv(16) ‖ ct ‖ HMAC(32)`: `S = ECDH_X(ephemeral, peer)` →
+ * `kdf = eufyKDF(S)` → `ct = AES-128-CBC(kdf[0:16], iv, PKCS7(plaintext))`, tagged
+ * `HMAC-SHA256(kdf[16:48], iv ‖ ct)`.
+ */
+export function eciesWrap(plaintext: Buffer, peerPublicKey: Buffer, options: EciesWrapOptions = {}): Buffer {
+  const ecdh = createECDH("prime256v1");
+  if (options.ephemeralPrivateKey) ecdh.setPrivateKey(options.ephemeralPrivateKey);
+  else ecdh.generateKeys();
+  const kdf = eufyKdf(ecdh.computeSecret(peerPublicKey), 48);
+  const iv = options.iv ?? randomBytes(16);
+  const cipher = createCipheriv("aes-128-cbc", kdf.subarray(0, 16), iv);
+  const ct = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+  const tag = createHmac("sha256", kdf.subarray(16, 48)).update(iv).update(ct).digest();
+  return Buffer.concat([ecdh.getPublicKey(null, "compressed"), iv, ct, tag]);
+}
+
 /**
  * Derive the P2P **level-2** (signCode 2/8) AES-256-GCM session key from a *decrypted*
  * `CMD_GATEWAYINFO` (1100) payload and the station's ECC private key (from `get_ciphers`).
@@ -294,9 +338,10 @@ export function buildLookupWithKeyPayload2(p2pDid: string, dskKey: string): Buff
 }
 
 /** Encode an address as `[flags:2 BE=0x0002][port:2 LE][ip:4 reversed][pad:8]` — same shape as a
- * LOCAL_LOOKUP_RESP/CAM_ID record, embedded here as a self-reported candidate. Reverse-engineered
- * byte-exact from a live capture of the real app's own LOOKUP_WITH_KEY request. */
-function encodeSelfAddress(host: string, port: number): Buffer {
+ * LOCAL_LOOKUP_RESP/CAM_ID record. It carries the self-reported candidate in a LOOKUP_WITH_KEY request
+ * (reverse-engineered byte-exact from a live capture of the real app's own request) and the relay address
+ * in a RLY_REQ. */
+function encodeAddress(host: string, port: number): Buffer {
   const out = Buffer.alloc(16);
   out.writeUInt16BE(0x0002, 0); // constant in every captured request; purpose unconfirmed
   out.writeUInt16LE(port, 2);
@@ -323,11 +368,25 @@ function encodeSelfAddress(host: string, port: number): Buffer {
 export function buildLookupWithKeyPayload(p2pDid: string, selfHost: string, selfPort: number, dskKey: string): Buffer {
   return Buffer.concat([
     p2pDidToBuffer(p2pDid),
-    encodeSelfAddress(selfHost, selfPort),
+    encodeAddress(selfHost, selfPort),
     Buffer.from([0x02, 0x05, 0x01, 0x05]),
     Buffer.from(dskKey),
     Buffer.from([0, 0, 0, 0]),
   ]);
+}
+
+/** RLY_REQ payload: `[p2pDid:20][relay address record:16][mark:4 BE]`, naming the relay port and mark a RLY_PORT_ACK gave. */
+export function buildRelayRequestPayload(p2pDid: string, relay: Address, mark: number): Buffer {
+  const tail = Buffer.alloc(4);
+  tail.writeUInt32BE(mark >>> 0, 0);
+  return Buffer.concat([p2pDidToBuffer(p2pDid), encodeAddress(relay.host, relay.port), tail]);
+}
+
+/** RLY_PKT payload: `[handle:4 BE][p2pDid:20][role:1][pad:3]`; a connecting client's role byte is 0. */
+export function buildRelayPacketPayload(handle: number, p2pDid: string): Buffer {
+  const head = Buffer.alloc(4);
+  head.writeUInt32BE(handle >>> 0, 0);
+  return Buffer.concat([head, p2pDidToBuffer(p2pDid), Buffer.alloc(4)]);
 }
 
 /** CHECK_CAM hole-punch payload: `[p2pDid:20][0x000000]`. */
@@ -497,11 +556,38 @@ export function parseDataFrameHeader(frame: Buffer): P2PDataFrameHeader {
   };
 }
 
-/** Parse a LOOKUP_ADDR / LOOKUP_ADDR2 response into a device address. */
+/** Read the 16-byte address record at `offset`: port little-endian at +2, IPv4 reversed at +4. */
+function readAddress(buf: Buffer, offset: number): Address {
+  return {
+    host: `${buf[offset + 7]}.${buf[offset + 6]}.${buf[offset + 5]}.${buf[offset + 4]}`,
+    port: buf.readUInt16LE(offset + 2),
+  };
+}
+
+/** Parse a LOOKUP_ADDR or RLY_TO message's leading address record. */
 export function parseLookupAddr(msg: Buffer): Address {
-  const port = msg.subarray(6, 8).readUInt16LE();
-  const host = `${msg[11]}.${msg[10]}.${msg[9]}.${msg[8]}`;
-  return { host, port };
+  return readAddress(msg, 4);
+}
+
+/** The relay servers a LIST_REQ_ACK names, in the order listed, without the unspecified address; records past the message's end are dropped. */
+export function parseRelayList(msg: Buffer): Address[] {
+  const out: Address[] = [];
+  const count = msg.length > 4 ? msg[4] : 0;
+  for (let i = 0; i < count && 8 + 16 * (i + 1) <= msg.length; i++) {
+    const addr = readAddress(msg, 8 + 16 * i);
+    if (addr.host !== "0.0.0.0") out.push(addr);
+  }
+  return out;
+}
+
+/** A RLY_PORT_ACK's mark and relay port, or `undefined` for a message too short to carry them. */
+export function parseRelayPortAck(msg: Buffer): { mark: number; port: number } | undefined {
+  return msg.length >= 10 ? { mark: msg.readUInt32BE(4), port: msg.readUInt16BE(8) } : undefined;
+}
+
+/** A RLY_TO's relay endpoint and handle, or `undefined` for a message too short to carry them. */
+export function parseRelayTo(msg: Buffer): { address: Address; handle: number } | undefined {
+  return msg.length >= 24 ? { address: readAddress(msg, 4), handle: msg.readUInt32BE(20) } : undefined;
 }
 
 /** Read a NUL-terminated UTF-8 string (CMD_NOTIFY_PAYLOAD carries JSON this way). */

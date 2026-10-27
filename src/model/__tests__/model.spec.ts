@@ -147,6 +147,24 @@ describe("resolveDevice — 3-tier composition", () => {
     expect(resolveDevice({ deviceType: 46 }).capabilities).not.toContain("ptz");
   });
 
+  it("does not advertise a spotlight from the params reported by T8171", () => {
+    // Three T8171 units on firmware 1.2.1.6 reported precisely these light-detection params.
+    const params = { 1400: "0", 1401: "80", 1403: "1" };
+    const e30 = resolveDevice({ model: "T8171", deviceType: DeviceType.SOLO_CAMERA_E30, params });
+    expect(e30.capabilities).not.toContain("light");
+    const properties = e30.properties.map((p) => p.name);
+    for (const name of ["light", "brightness", "spotlightEnabled", "colorTemp"]) {
+      expect(properties).not.toContain(name);
+    }
+    expect(resolveDevice({ model: "T8170", deviceType: 48, params }).capabilities).toContain("light");
+    for (const [param, value] of Object.entries(params)) {
+      expect(
+        resolveDevice({ model: "T8171", deviceType: DeviceType.SOLO_CAMERA_E30, params: { [param]: value } })
+          .capabilities,
+      ).not.toContain("light");
+    }
+  });
+
   it.each([undefined, DeviceType.CAMERA_POE_S4])(
     "recognizes PoE S4 pan-tilt without reported preset parameters (device type %s)",
     (deviceType) => {
@@ -297,7 +315,7 @@ describe("doorbell — confirmed against real T8214", () => {
 
   it("types the battery T8213 as a doorbell", () => {
     // Without its registry row the raw T-code missed the doorbell model hint, so a T8213's presses
-    // arrived but the host built no doorbell event or ring trigger (ha-eufy-sdk#38).
+    // arrived but the host built no doorbell event or ring trigger.
     const r = resolveDevice({ model: "T8213", deviceType: 91 });
     expect(r.capabilities).toContain("doorbell");
     expect(r.capabilities).toContain("battery");

@@ -39,11 +39,9 @@ export async function openLiveStream(session: P2PSession, opts: LiveStreamOption
 
 /**
  * **Live snapshot off a SHARED source** (V6) — snapshot as just another consumer of the shared live
- * pull. If the source is already warm and has a cached keyframe (V2 keyframe-prime), the joining
- * consumer receives that IDR immediately and we decode it with **no extra pull** — a snapshot while
- * someone else watches costs nothing on the wire. Otherwise we warm the source and wait for a clean
- * keyframe (the first IDR after a cold start is frequently partial, so skip it by default). Requires
- * `ffmpeg` for the Annex-B → JPEG decode.
+ * pull. A warm source reuses its upstream session; collection starts from live keyframes rather than
+ * a retained picture. A live source captures its next keyframe by default; a cold source skips the
+ * first keyframe because its first IDR is frequently partial. Requires `ffmpeg` for the Annex-B → JPEG decode.
  *
  * The returned dimensions are the ENCODED IMAGE's own, read back out of it — never the frame header's.
  * The header states the stream's geometry when the capture started, and a stream that reconfigures
@@ -74,12 +72,9 @@ export async function captureSnapshotFromShared(
 ): Promise<{ jpeg: Buffer; width: number; height: number }> {
   const timeoutMs = opts.timeoutMs ?? 20000;
   const collectMs = opts.collectMs ?? 1500;
-  const skip = opts.skipKeyframes ?? 1;
   opts.signal?.throwIfAborted();
   const consumer = source.attach();
-  // A primed consumer gets the cached IDR first — a single decodable keyframe: take it and decode at
-  // once (no skip, no collect window). A cold consumer skips the (often partial) first IDR.
-  const primed = consumer.primed;
+  const skip = opts.skipKeyframes ?? (source.state === "live" ? 0 : 1);
   let burst: { h264: Buffer; codec: VideoCodec; sets?: ParamSets };
   try {
     burst = await new Promise<{
@@ -106,20 +101,16 @@ export async function captureSnapshotFromShared(
         sets = updatedParamSets(fr.data, sets);
         if (fr.keyframe) keyCount++;
         if (!capturing) {
-          const threshold = primed ? 0 : skip; // primed: accept the cached IDR immediately
-          if (!fr.keyframe || keyCount <= threshold) return;
+          if (!fr.keyframe || keyCount <= skip) return;
           capturing = true;
           codec = fr.codec;
         }
         bufs.push(fr.data);
         if (!settle)
-          settle = setTimeout(
-            () => {
-              cleanup();
-              resolve({ h264: Buffer.concat(bufs), codec, sets });
-            },
-            primed ? 0 : collectMs,
-          );
+          settle = setTimeout(() => {
+            cleanup();
+            resolve({ h264: Buffer.concat(bufs), codec, sets });
+          }, collectMs);
       };
       const onError = (err: Error) => {
         cleanup();

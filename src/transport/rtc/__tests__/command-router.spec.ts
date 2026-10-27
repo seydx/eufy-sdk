@@ -135,7 +135,7 @@ const sent = (buf: Buffer) => ({
 const arming = (mode: number) => ({
   kind: "set-payload" as const,
   cmd: 1224,
-  payload: { mode_type: mode, user_name: "Home Assistant" },
+  payload: { mode_type: mode, user_name: "someone+tag" },
   channel: 0,
   mValue3: 0,
 });
@@ -185,7 +185,7 @@ describe("RtcCommandRouter", () => {
       account_id: "adminid",
       cmd: 1224,
       mValue3: 0,
-      payload: { mode_type: 1, user_name: "Home Assistant" },
+      payload: { mode_type: 1, user_name: "someone+tag" },
     });
   });
 

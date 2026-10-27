@@ -11,8 +11,8 @@ import type { LiveVideoConfig, LiveVideoFrame } from "../../../core/contracts.js
  * previous frame's dimensions and diff every frame against them.
  *
  * The announcement is per CONSUMER rather than per source, because a consumer does not necessarily
- * receive the frame on which the source saw the change: it may join mid-session and be primed with a
- * cached keyframe, or cross its queue bound and resynchronise onto a later IDR. Both cases hand it media
+ * receive the frame on which the source saw the change: it may join mid-session or cross its queue
+ * bound and resynchronise onto a later IDR. Both cases hand it media
  * of a configuration it was never told about, so the comparison has to be against what THIS consumer was
  * last given.
  */
@@ -49,7 +49,7 @@ function watch(source: SharedLiveSource) {
 }
 
 /**
- * Let a staged keyframe-prime be replayed.
+ * Yield across asynchronous subscription setup.
  *
  * The prime is deferred to a microtask so it lands after the caller's `video` listener is in place, which
  * means a joining consumer is told its configuration on the turn after it attaches — never in the same
@@ -98,7 +98,7 @@ describe("live video configuration announcement", () => {
   it("announces the frame header's report while no parameter sets state a geometry", () => {
     const { source, video } = sourceWithStream();
     const watcher = watch(source);
-    video(videoFrame(unit(DELTA), { keyframe: false, width: 1600, height: 1200 }));
+    video(videoFrame(unit(IDR), { keyframe: true, width: 1600, height: 1200 }));
     video(videoFrame(unit(DELTA), { keyframe: false, width: 1600, height: 1200 }));
     expect(watcher.announced).toEqual([{ codec: "h264", width: 1600, height: 1200 }]);
     expect(watcher.frames).toHaveLength(2);
@@ -108,7 +108,7 @@ describe("live video configuration announcement", () => {
   it("announces the parameter sets' geometry over the header once they state one", () => {
     const { source, video } = sourceWithStream();
     const watcher = watch(source);
-    video(videoFrame(unit(DELTA), { keyframe: false, width: 640, height: 360 }));
+    video(videoFrame(unit(IDR), { keyframe: true, width: 640, height: 360 }));
     video(videoFrame(unit(SPS_1080, PPS, IDR), { keyframe: true, width: 640, height: 360 }));
     expect(watcher.announced).toEqual([
       { codec: "h264", width: 640, height: 360 },
@@ -129,12 +129,14 @@ describe("live video configuration announcement", () => {
     watcher.consumer.detach();
   });
 
-  it("announces to a consumer primed with a keyframe it did not witness arriving", async () => {
+  it("announces to a late consumer only when its next live keyframe arrives", async () => {
     const { source, video } = sourceWithStream();
     const first = watch(source);
     video(keyframe(SPS_1080));
     const late = watch(source);
     await settle();
+    expect(late.announced).toEqual([]);
+    video(keyframe(SPS_1080));
     expect(late.announced).toEqual([{ codec: "h264", width: 1920, height: 1080 }]);
     first.consumer.detach();
     late.consumer.detach();
@@ -151,10 +153,7 @@ describe("live video configuration announcement", () => {
       { codec: "h264", width: 1280, height: 720 },
       { codec: "h264", width: 1920, height: 1080 },
     ]);
-    expect(second.announced).toEqual([
-      { codec: "h264", width: 1280, height: 720 },
-      { codec: "h264", width: 1920, height: 1080 },
-    ]);
+    expect(second.announced).toEqual([{ codec: "h264", width: 1920, height: 1080 }]);
     first.consumer.detach();
     second.consumer.detach();
   });

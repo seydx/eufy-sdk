@@ -19,12 +19,19 @@ const results = (commandId: number, body: Buffer, signCode = 0) => {
   return seen;
 };
 
-/** The fixed-size body one lock family answers a `SET_PAYLOAD` write with: the code, then zero padding. */
-const padded = (value: number, length = 132) => {
+/**
+ * The fixed-size body one lock family answers a `SET_PAYLOAD` write with: the code, then whatever its reply
+ * buffer held — zeros by default here, or the `tail` given.
+ */
+const padded = (value: number, length = 132, tail?: Buffer) => {
   const b = Buffer.alloc(length);
   b.writeInt32LE(value);
+  tail?.copy(b, 4, 0, length - 4);
   return b;
 };
+
+/** A stale-buffer tail of the kind measured once: a fragment of the device's own HTTP traffic. */
+const STALE_TAIL = Buffer.from("devs_list HTTP/1.1\r\nHost: example.invalid\r\nX-Random-Number: 4096\r\n", "latin1");
 
 /** An int32 LE result body, as the station sends one. */
 const code = (value: number) => {
@@ -82,31 +89,38 @@ describe("P2P frame — command result", () => {
     expect(results(1700, Buffer.from("not a result", "utf8"))).toEqual([]);
   });
 
-  it("reads the result out of the 132-byte SET_PAYLOAD body that pads the code with zeros", () => {
-    // The classic Wi-Fi smart lock answers a SET_PAYLOAD write in a fixed-size buffer: the code, then
-    // nothing but zero padding. The body is not block-aligned, so the level-1 decrypt skips it and it
-    // arrives raw — under a strict four-byte test the lock's own rejection was dropped and read as
-    // silence, which is the one answer it never gives.
-    expect(results(1350, padded(-110), 1)).toEqual([{ code: -110, channel: 0 }]);
+  it("reads the result out of the 132-byte SET_PAYLOAD body the classic Wi-Fi lock answers with", () => {
+    // The lock answers a SET_PAYLOAD write in a fixed-size buffer on a sign-code-0 frame: the code, then
+    // whatever the buffer held. Under a strict four-byte test the lock's own rejection was dropped and
+    // read as silence, which is the one answer it never gives.
+    expect(results(1350, padded(-110))).toEqual([{ code: -110, channel: 0 }]);
   });
 
-  it("reads a zero-padded success the same way", () => {
-    expect(results(1350, padded(0), 1)).toEqual([{ code: 0, channel: 0 }]);
+  it("reads a success the same way", () => {
+    expect(results(1350, padded(0))).toEqual([{ code: 0, channel: 0 }]);
   });
 
-  it("still reports nothing when the padding is not zeros", () => {
-    // The tail is what separates a padded answer from ciphertext the decrypt could not open: a
-    // plausible first word is not evidence on its own, so only an all-zero tail admits the code.
-    const body = Buffer.alloc(132, 0xa5);
-    body.writeInt32LE(-110);
-    expect(results(1350, body, 1)).toEqual([]);
+  it("reads the code whatever the rest of the buffer holds", () => {
+    // The bytes after the code are stale buffer content — all zero on most answers measured, a fragment
+    // of the device's own HTTP traffic on one — so they are no part of the shape. A gate on an all-zero
+    // tail dropped every answer whose buffer was not clean, success and refusal alike.
+    expect(results(1350, padded(-151, 132, STALE_TAIL))).toEqual([{ code: -151, channel: 0 }]);
+    expect(results(1350, padded(0, 132, STALE_TAIL))).toEqual([{ code: 0, channel: 0 }]);
+    expect(results(1350, padded(0, 132, Buffer.alloc(128, 0xa5)))).toEqual([{ code: 0, channel: 0 }]);
+  });
+
+  it("reports nothing for the same body on an encrypted frame", () => {
+    // Sign code 0 is what admits the read: that body is plaintext as sent. On a sign-code 1 or 8 frame a
+    // 132-byte body is ciphertext the decrypt could not open, and its first word is not a result.
+    expect(results(1350, padded(-110), 1)).toEqual([]);
+    expect(results(1350, padded(-110), 8)).toEqual([]);
   });
 
   it("reports nothing for the padded shape on another wrapper or at another length", () => {
-    // The read is pinned to the shape measured, not generalised from it: a zero tail on a body of some
-    // other length, or under some other command, is not the answer this device gives.
-    expect(results(1700, padded(-110), 1)).toEqual([]);
-    expect(results(1350, padded(-110, 64), 1)).toEqual([]);
-    expect(results(1350, padded(-110, 148), 1)).toEqual([]);
+    // The read is pinned to the shape measured, not generalised from it: that body under some other
+    // command, or at some other length, is not the answer this device gives.
+    expect(results(1700, padded(-110))).toEqual([]);
+    expect(results(1350, padded(-110, 64))).toEqual([]);
+    expect(results(1350, padded(-110, 148))).toEqual([]);
   });
 });

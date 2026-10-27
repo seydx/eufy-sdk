@@ -28,8 +28,7 @@ export interface ReadableEgressOptions {
 /**
  * Wrap a shared-source {@link Consumer} in a fresh Readable. The consumer is detached when the
  * Readable is destroyed/ended, so callers own the lifetime by owning the stream.
- * Frames arrive through onMedia; an empty video listener releases the keyframe-prime
- * because ConsumerImpl replays it when the first video listener is added.
+ * Frames arrive through onMedia, preserving their source-arrival metadata.
  */
 export function openReadableFromConsumer(consumer: Consumer, opts: ReadableEgressOptions = {}): Readable {
   const objectMode = opts.objectMode ?? false;
@@ -56,7 +55,6 @@ export function openReadableFromConsumer(consumer: Consumer, opts: ReadableEgres
       : item.frame.data;
     if (!readable.push(value)) consumer.pause();
   });
-  consumer.on("video", () => {});
 
   consumer.on("stop", () => readable.push(null)); // upstream ended → EOF
   consumer.on("error", (err: Error) => readable.destroy(err));

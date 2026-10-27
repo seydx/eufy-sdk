@@ -69,8 +69,9 @@ Available today: `camera` (on/off/privacy/statusLed + stored/live snapshots, liv
 permanent-outdoor-light line: on/off/brightness/custom colour/effect — see the
 [Smart lights guide](/smart-lights)),
 `ptz` (rotate + left/right/up/down, zoom, and a `preset()` sub-API — see the [PTZ guide](/ptz)), plus
-`arming`, `lock` (lock/unlock/setAutoLock on both the P2P video lock and the MQTT garage door, plus
-setRainMode on the video lock only — optional accessor, `?.()`), `siren` (volume, alarm duration, and test/stop triggers — see below),
+`arming`, `lock` (lock/unlock/setAutoLock on both the P2P video lock and the MQTT garage door; lock/unlock
+also on the classic Wi-Fi lock over its own keyed envelope, both directions hardware-confirmed, where
+`setAutoLock` is absent — optional accessor, `?.()`; plus setRainMode on the video lock only), `siren` (volume, alarm duration, and test/stop triggers — see below),
 and `smartDrop` (`openLid()` on a standalone SmartDrop T8790).
 
 > **Unverified writes are absent, they don't guess.** A write method present on a `dev.<cap>()` object

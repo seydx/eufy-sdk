@@ -1,5 +1,6 @@
-import { EventEmitter } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { describe, expect, it, vi } from "vitest";
+import { p2pVideoFrame } from "./live-source-fixtures.js";
 
 /**
  * A camera that finds the station's own session claimed opens a SECOND connection, and that connection
@@ -20,23 +21,34 @@ const built: FakeSession[] = [];
 /** Set before an open to make the NEXT session connect without ever getting a level-2 key. */
 let nextSessionHasNoKey = false;
 
+/**
+ * Set before an open to make the NEXT session's path answer this many ms after `connect()` resolves, or never
+ * for `Infinity`. `connect()` itself resolves at once, as the real one does once its lookups are sent.
+ */
+let nextSessionConnectsAfterMs = 0;
+
 class FakeSession extends EventEmitter {
   isConnected = false;
   traceId = `trace-${built.length}`;
   opts: Record<string, unknown>;
   hasKey: boolean;
+  connectsAfterMs: number;
   constructor(opts: Record<string, unknown>) {
     super();
     this.opts = opts;
     this.hasKey = !nextSessionHasNoKey;
+    this.connectsAfterMs = nextSessionConnectsAfterMs;
     nextSessionHasNoKey = false;
+    nextSessionConnectsAfterMs = 0;
     built.push(this);
   }
   async connect() {
-    this.isConnected = true;
+    if (this.connectsAfterMs === 0) this.isConnected = true;
+    else if (Number.isFinite(this.connectsAfterMs)) setTimeout(() => (this.isConnected = true), this.connectsAfterMs);
   }
+  /** A key wait begun before the path answers is the one that runs out: the key rides the connected path. */
   async awaitLevel2Key() {
-    return this.hasKey;
+    return this.hasKey && this.isConnected;
   }
   repromptLevel2Key() {
     return false;
@@ -52,6 +64,7 @@ vi.mock("../p2p-session.js", async (importOriginal) => ({
 }));
 
 const { P2PCommandRouter } = await import("../command-router.js");
+const { CONNECT_TIMEOUT_MS } = await import("../p2p-session.js");
 type Router = InstanceType<typeof P2PCommandRouter>;
 
 const STATION_SN = "T8010P0000000000";
@@ -66,6 +79,7 @@ function router() {
   built.length = 0;
   events.length = 0;
   nextSessionHasNoKey = false;
+  nextSessionConnectsAfterMs = 0;
   const record = (sn: string, channel: number, parent?: string) => ({
     sn,
     stationSn: parent ?? sn,
@@ -95,6 +109,52 @@ const openLive = (r: Router, sn: string) =>
 
 const sessionKeys = (r: Router) => (r as unknown as { liveSessionKeys: Map<string, string> }).liveSessionKeys;
 const sources = (r: Router) => (r as unknown as { liveSources: Map<string, unknown> }).liveSources;
+
+/**
+ * A source that ends its own stream ends each consumer first and tears down second, so a Readable reaches
+ * EOF and destroys itself after the teardown has released the source's session claim. That late detach
+ * must leave the source `stopped`: the router rebuilds only a stopped source, and a revived one would warm
+ * on a connection it no longer holds. Two endings reach that order — the upstream stopping, and a battery
+ * budget expiring unextended, which a Readable never extends.
+ */
+describe("reacquiring after Readable EOF", () => {
+  for (const ending of ["upstream end", "battery budget"] as const)
+    for (const sibling of [false, true])
+      it(`rebuilds the source and restores its session claim (${ending}, ${sibling ? "second" : "first"} camera)`, async () => {
+        const r = router();
+        const manager = (r as unknown as { manager: { get(key: string): FakeSession | undefined } }).manager;
+        const target = sibling ? CAM_B : CAM_A;
+        const channel = sibling ? 2 : 0;
+        const key = `${STATION_SN}:${channel}`;
+        const opts = ending === "battery budget" ? { powered: "battery", batteryBudgetMs: 1, budgetGraceMs: 1 } : {};
+        if (sibling) (await openLive(r, CAM_A)).attach();
+        const reader = await r.mediaProviderFor(target).openReadable!(opts as never);
+        const source = sources(r).get(key) as { state: string; consumerCount: number; stream: EventEmitter };
+        const claim = sessionKeys(r).get(key)!;
+        try {
+          reader.resume();
+          const closed = once(reader, "close");
+          manager.get(claim)!.emit("data", p2pVideoFrame({ nal: Buffer.from([0x65, 0x88]), keyframe: true, channel }));
+          if (ending === "upstream end") source.stream.emit("stop");
+          await closed;
+          expect(source.state).toBe("stopped");
+          expect(source.consumerCount).toBe(0);
+          expect(sessionKeys(r).has(key)).toBe(false);
+          const opened = built.length;
+          const reopened = await r.mediaProviderFor(target).openReadable!();
+          try {
+            expect(sources(r).get(key)).not.toBe(source);
+            expect(sessionKeys(r).get(key)).toBe(claim);
+            expect(built).toHaveLength(opened + (claim === STATION_SN ? 0 : 1));
+          } finally {
+            reopened.destroy();
+          }
+        } finally {
+          reader.destroy();
+          await r.closeAll();
+        }
+      });
+});
 
 describe("a second live camera on a claimed station session", () => {
   it("really opens another connection, rather than only recording that it would", async () => {
@@ -164,6 +224,45 @@ describe("a second live camera on a claimed station session", () => {
 
     nextSessionHasNoKey = true;
     await expect(openLive(r, CAM_B)).rejects.toMatchObject({ name: "StationKeyUnavailableError" });
+  });
+
+  /**
+   * A relay connect lands about 25 s after `connect()` resolves, so a key wait begun at the open would run
+   * out on the connect rather than on the key. The media session is handed over once it connects and holds
+   * its key.
+   */
+  it("waits for a media session's path to connect before it waits for the key", async () => {
+    vi.useFakeTimers();
+    try {
+      const r = router();
+      (await openLive(r, CAM_A)).attach();
+
+      nextSessionConnectsAfterMs = 25_200;
+      const opened = openLive(r, CAM_B);
+      await vi.advanceTimersByTimeAsync(25_400);
+
+      await expect(opened).resolves.toBeDefined();
+      expect(built[1].isConnected).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reports a media session that never connects as an unreachable station, not a missing key", async () => {
+    vi.useFakeTimers();
+    try {
+      const r = router();
+      (await openLive(r, CAM_A)).attach();
+
+      nextSessionConnectsAfterMs = Infinity;
+      const opened = openLive(r, CAM_B);
+      const outcome = expect(opened).rejects.toMatchObject({ name: "StationUnreachableError", stationSn: STATION_SN });
+      await vi.advanceTimersByTimeAsync(CONNECT_TIMEOUT_MS + 400);
+
+      await outcome;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   /**

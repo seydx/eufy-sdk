@@ -79,7 +79,7 @@ import {
 import {
   isNvrMediaCamera,
   isNvrDualLensCamera,
-  isDoorbellT8223,
+  isCallDoorbell,
   isHomeBase,
   isNvrT8N00,
   isStation9000,
@@ -1157,7 +1157,7 @@ export class EufyMega extends EventEmitter {
   /**
    * The station a device's commands go through: the device itself, or the HomeBase the registry links it
    * to. Answers the target record, the station record and serial, the station's `device_type`, and the
-   * `t9000` / `t8n00` / `t8223` family flags.
+   * `t9000` / `t8n00` / `callDoorbell` family flags.
    */
   private stationOf(sn: string) {
     const devices = this.registry.list();
@@ -1175,7 +1175,7 @@ export class EufyMega extends EventEmitter {
       deviceType,
       t9000: isStation9000(family),
       t8n00: isNvrT8N00(family),
-      t8223: isDoorbellT8223(family),
+      callDoorbell: isCallDoorbell(family),
     };
   }
 
@@ -1227,19 +1227,26 @@ export class EufyMega extends EventEmitter {
    * Choose the transport stack for one command — the routing half of {@link commandSinkFor}.
    *
    * The `ff09-*` kinds share ONE frame that rides either transport, so each stack is asked whether it
-   * drives this device (`claimsDevice`) rather than inferring from the kind. `registry.require` throws
-   * on an unloaded serial, so a routing decision never silently falls through to the wrong transport.
+   * drives this device (`claimsDevice`) rather than inferring from the kind; `keyed-payload-actuate` (the
+   * classic Wi-Fi lock) is routed the same way, a channel-less actuation claimed by the stack that drives
+   * the lock. `registry.require` throws on an unloaded serial, so a routing decision never silently falls
+   * through to the wrong transport.
    * The `eufy_life` DP writes (smart lights) are secure-MQTT-only. `aiot-dp` routes to either the
    * Anker AIoT MQTT stack or the legacy Tuya REST router depending on the device's category
    * (`eufy_home_tuya` → Tuya, everything else → MQTT). The capability layer emits a single `aiot-dp`
    * kind and stays transport-agnostic; only the facade sees both sides and decides here. A T9000 or T8N00
    * station and the devices attached to it go over RTC, with an attached device's command refused
    * unless its channel resolves back to it on the station. T8N00 uses full SDP and admits direct and
-   * relay candidates; T9000 retains compact SDP and relay-only candidates. A T8223 doorbell's route serves
+   * relay candidates; T9000 retains compact SDP and relay-only candidates. A call doorbell's route serves
    * media only, and the RTC router refuses a command on it. Everything else is P2P.
    */
   private routeCommand(sn: string, cmd: Command): Promise<void> {
-    if (cmd.kind === "ff09-actuate" || cmd.kind === "ff09-autolock" || cmd.kind === "ff09-setting-toggle") {
+    if (
+      cmd.kind === "ff09-actuate" ||
+      cmd.kind === "ff09-autolock" ||
+      cmd.kind === "ff09-setting-toggle" ||
+      cmd.kind === "keyed-payload-actuate"
+    ) {
       const dev = this.registry.require(sn);
       if (P2PCommandRouter.claimsDevice(dev)) return this.p2p.dispatchCommand(sn, cmd);
       if (MqttCommandRouter.claimsDevice(dev)) return this.mqtt.dispatchCommand(sn, cmd);
@@ -1263,14 +1270,14 @@ export class EufyMega extends EventEmitter {
   }
 
   /**
-   * The RTC route for a T9000 or T8N00 station or a device attached to one, or a T8223 doorbell that is its
+   * The RTC route for a T9000 or T8N00 station or a device attached to one, or a call doorbell that is its
    * own station, decided by the station's model classification; `undefined` for any other device. A T8N00
-   * route carries its native `call` signalling; a T8223 route does too, and streams its video on a media
+   * route carries its native `call` signalling; a doorbell route does too, and streams its video on a media
    * track. The admin id is the station's `member.admin_user_id`, else the logged-in user.
    */
   private rtcRouteFor(sn: string): RtcRoute | undefined {
-    const { target, station, stationSn, raw, t9000, t8n00: native, t8223 } = this.stationOf(sn);
-    const doorbell = t8223 && stationSn === sn;
+    const { target, station, stationSn, raw, t9000, t8n00: native, callDoorbell } = this.stationOf(sn);
+    const doorbell = callDoorbell && stationSn === sn;
     if (!target || !station || !(t9000 || native || doorbell)) return undefined;
     const member = raw.member?.admin_user_id;
     const adminUserId = typeof member === "string" && member ? member : undefined;
@@ -1281,7 +1288,8 @@ export class EufyMega extends EventEmitter {
 
   /**
    * The RTC media provider for a station on a media-track route, or a camera attached to a T9000 whose
-   * `device_channel` resolves back to it on the station; `undefined` otherwise, unless an NVR camera has its own dedicated media call.
+   * `device_channel` resolves back to it on the station; `undefined` otherwise. A camera attached to a T8N00 gets the
+   * NVR's dedicated media call when {@link isNvrMediaCamera} admits it.
    */
   private rtcMediaFor(sn: string): MediaProvider | undefined {
     const route = this.rtcRouteFor(sn);
@@ -1400,6 +1408,8 @@ export class EufyMega extends EventEmitter {
    * first announces it and the others stay silent. Its timing says only when a caller happened to read; the
    * value is the news. It applies what the device volunteered over realtime on top of the cloud half, which
    * the registry keeps apart, so it can neither revert nor announce a revert of a report already landed.
+   * Nothing awaits that refresh, so its failure is reported like the other background paths' — a dead
+   * token as `sessionExpired`, anything else as `error` — and the read keeps its last-known value.
    *
    * The `Device` returned is held WEAKLY: it is what the inbound paths announce against, so a caller that
    * wants property changes for a serial keeps its own reference. Dropping it stops the announcements, not
@@ -1431,8 +1441,12 @@ export class EufyMega extends EventEmitter {
       dev.setFreshnessPolicy({
         staleAfterMs: this.opts.cacheTtlMs ?? 15_000,
         refresh: async () => {
-          const fresh = await this.registry.record(sn);
-          this.applyAndAnnounce(dev, { ...fresh.params, ...fresh.dpParams });
+          try {
+            const fresh = await this.registry.record(sn);
+            this.applyAndAnnounce(dev, { ...fresh.params, ...fresh.dpParams });
+          } catch (e) {
+            this.reportError(e);
+          }
         },
       });
     }

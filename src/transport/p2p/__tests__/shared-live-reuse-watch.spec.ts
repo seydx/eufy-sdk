@@ -2,23 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { SharedLiveSource } from "../shared-live-source.js";
 import { H264, streamFactory, unit, videoFrame } from "./live-source-fixtures.js";
 
-/**
- * A source reused inside its linger window is watched like any other.
- *
- * The linger keeps a stream alive after its last consumer leaves, so re-opening the same camera costs nothing.
- * It also keeps the last keyframe, which a joining consumer is primed with so it decodes without waiting a
- * whole group of pictures.
- *
- * Together those two made a silent failure: a consumer joining a lingering source is handed a cached keyframe
- * at once, so a caller sees media and commits to it — an adaptation process, a negotiated HomeKit session —
- * while the stream underneath may already have stopped being served. Warming was the only thing that armed a
- * deadline, and reuse skips warming by definition, so nothing ever timed out. Observed on a real account as a
- * 30 s HomeKit timeout whose whole trace was one primed keyframe and then silence, where the retry that
- * followed rebuilt the stream and reached its first output in 0.69 s.
- *
- * A primed keyframe is evidence about the past. Only a frame that arrives after the join says the stream is
- * still being served.
- */
+/** A lingering source confirms resumed upstream delivery independently of the joining consumer's keyframe gate. */
 const keyframe = () => videoFrame(unit(H264.sps, H264.pps, H264.idr), { keyframe: true });
 
 function source(over: { lingerMs?: number; warmTimeoutMs?: number; warmRetryMs?: number } = {}) {
@@ -36,7 +20,7 @@ function source(over: { lingerMs?: number; warmTimeoutMs?: number; warmRetryMs?:
 const settle = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 describe("a consumer joining a lingering source", () => {
-  it("fails when no frame arrives after the join, however recent the primed one", async () => {
+  it("fails when no frame arrives after the join despite a recent cached keyframe", async () => {
     const { src, streams } = source();
     const first = src.attach();
     streams[0]!.video(keyframe());

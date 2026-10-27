@@ -1,4 +1,4 @@
-import { isVideoSmartLock } from "../device-family.js";
+import { isClassicWifiLock, isVideoSmartLock } from "../device-family.js";
 import { asBool } from "../../core/util.js";
 import { LockPushEvent } from "../push-events.js";
 import { describeDevice } from "./access.js";
@@ -39,13 +39,19 @@ export const LOCK_SETTING_ID = {
 /**
  * Bound lock controls — the object returned by `dev.lock()`.
  *
- * Everything is DERIVED from `LOCK_MEMBERS`. `lock`/`unlock` and the setting toggles drive any
- * lock-family actuator — currently the T8531 video smart lock and the T85D0 garage door, which share one
- * actuation frame. This module emits ONE transport-neutral intent (identity fields only, no wire bytes,
- * no cipher, no routing key) and names no transport: the command sink routes P2P vs MQTT by the device's
- * topology, and the chosen transport's command router builds the frame + envelope and re-resolves its own
- * routing tail. Which pipe it is does not reach `dev.lock()` — its surface is identical either way,
- * the same way P2P-vs-cloud is hidden for live media.
+ * Everything is DERIVED from `LOCK_MEMBERS`. `lock`/`unlock` drive every lock-family actuator over the
+ * wire its family takes: the shared `ff09` frame on the T8531 video smart lock and the T85D0 garage door,
+ * the T8530 video lock's own `set-payload`, and the keyed-payload envelope on the classic Wi-Fi lock (the
+ * `T8520`-range unit that never negotiates a session key). The setting toggles ride `ff09` only. This
+ * module emits ONE transport-neutral intent per wire (identity fields only, no wire bytes, no cipher, no
+ * routing key) and names no transport: the command sink routes P2P vs MQTT by the device's topology, and
+ * the chosen transport's command router builds the frame + envelope and re-resolves its own routing tail.
+ * Which pipe it is does not reach `dev.lock()` — its surface is identical either way, the same way
+ * P2P-vs-cloud is hidden for live media.
+ *
+ * Classic Wi-Fi lock: `lock()` and `unlock()` are both confirmed on hardware — the bolt moved each way, the
+ * device answered result code 0, and the cloud status followed. That device answers every command, so on it
+ * the two reject on a refusal or an unanswered command as well as on missing identity.
  */
 export type LockActions = Surface<typeof LOCK_MEMBERS>;
 
@@ -79,7 +85,7 @@ function actuate(engage: boolean, ctx: CommandContext, sink: CommandSink): Promi
     });
   }
   return sink.dispatch({
-    kind: "ff09-actuate",
+    kind: isClassicWifiLock(ctx) ? "keyed-payload-actuate" : "ff09-actuate",
     engage,
     adminUserId: ctx.adminUserId,
     username: ctx.accountName ?? "",
@@ -147,6 +153,16 @@ function nativeReport(signal: InboundSignal): Record<string, unknown> | undefine
 }
 
 /**
+ * Whether the device speaks the `ff09` settings frames at all. The classic Wi-Fi lock actuates over its
+ * own keyed envelope and never negotiates the session key those frames ride on, so a settings write
+ * aimed at it can only time out — the members are withheld there rather than offered and failing.
+ */
+const speaksFf09Settings = (ctx: CommandContext): boolean => !isClassicWifiLock(ctx);
+
+/** Rain Mode's gate: the P2P video lock, and only a device that takes the `ff09` settings frame. */
+const rainModeAvailable = (ctx: CommandContext): boolean => overP2p(ctx) && speaksFf09Settings(ctx);
+
+/**
  * Every `lock` feature, declared once.
  *
  * The six toggles after `setRainMode` share its confirmed frame SHAPE and are grounded in the app's own
@@ -192,8 +208,8 @@ export const LOCK_MEMBERS = {
     description: "Lock battery level 0-100 (verified: param 1101, alias 6001).",
   },
   /**
-   * Link quality in dBm as the lock measures it, on the shared param 1141. Both actuation methods here
-   * are fire-and-forget, so a weak link is silent rather than an error.
+   * Link quality in dBm as the lock measures it, on the shared param 1141. On the `ff09` wire the
+   * actuations are fire-and-forget, so a weak link is silent rather than an error.
    */
   rssi: {
     param: 1141,
@@ -204,7 +220,10 @@ export const LOCK_MEMBERS = {
     description: "Lock signal strength (verified: param 1141 = RSSI).",
   },
 
-  /** Lock the deadbolt/door. Resolves after sending; does not confirm physical state. */
+  /**
+   * Lock the deadbolt/door. Resolves after sending, without confirming physical state — except on the
+   * classic Wi-Fi lock, which answers: there it rejects on a device refusal or no reply as well.
+   */
   lock: method(
     ({ ctx, sink }) =>
       (): Promise<void> =>
@@ -212,7 +231,10 @@ export const LOCK_MEMBERS = {
     "Lock the deadbolt/door.",
     actuationAvailable,
   ),
-  /** Unlock the deadbolt/door. Resolves after sending; does not confirm physical state. */
+  /**
+   * Unlock the deadbolt/door. Resolves after sending, without confirming physical state — except on the
+   * classic Wi-Fi lock, which answers: there it rejects on a device refusal or no reply as well.
+   */
   unlock: method(
     ({ ctx, sink }) =>
       (): Promise<void> =>
@@ -247,7 +269,7 @@ export const LOCK_MEMBERS = {
         });
       },
     "Read-modify-write the auto-lock setting, preserving the fields it does not change.",
-    (ctx) => !isVideoSmartLock(ctx),
+    (ctx) => !isVideoSmartLock(ctx) && speaksFf09Settings(ctx),
   ),
 
   /**
@@ -260,7 +282,7 @@ export const LOCK_MEMBERS = {
       (enabled: boolean): Promise<void> =>
         settingToggle(LOCK_SETTING_ID.RAIN_MODE, "setRainMode", enabled, ctx, sink),
     "Toggle Rain Mode.",
-    overP2p,
+    rainModeAvailable,
   ),
 
   /**

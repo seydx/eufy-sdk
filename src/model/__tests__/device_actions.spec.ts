@@ -1,6 +1,6 @@
 import { Device } from "../device.js";
 import { buildCommand } from "../capabilities/index.js";
-import { LIGHT } from "../capabilities/light.js";
+import { LIGHT_CMD } from "../capabilities/light.js";
 import { PTZ, PtzDirection } from "../capabilities/ptz.js";
 import type { CommandContext, CloudRecord } from "../types.js";
 import type { Command, CommandSink } from "../../core/contracts.js";
@@ -16,7 +16,7 @@ import type { Command, CommandSink } from "../../core/contracts.js";
  * leave a stale copy here.
  */
 const PT_DEVICE_TYPE = PTZ.detection!.deviceTypes![0]; // vendor-guaranteed pan-tilt
-const SPOTLIGHT_PARAM = LIGHT.detection!.evidenceParams![0]; // presence ⇒ `light`
+const SPOTLIGHT_PARAM = LIGHT_CMD.FLOODLIGHT_SWITCH; // presence ⇒ `light`
 const makeDevice = (rec: Parameters<typeof Device.fromRecord>[1]) => Device.fromRecord("SN1", rec);
 
 describe("Device.bindActions → fluent device.<cap>() accessors", () => {

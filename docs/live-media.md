@@ -25,8 +25,9 @@ Consequences a host should rely on:
 
 - **Cheap re-use.** The motion-thumbnail → tap-to-watch flow attaches a snapshot then a live view
   within seconds; the second attach re-uses the warm session, no second pull.
-- **Late joiners are primed instantly.** The last keyframe (IDR) is cached and replayed to a new
-  consumer on attach — no waiting a full GOP for the next keyframe before the picture appears.
+- **Late joiners wait for a live keyframe.** After video subscription, delivery starts at the next
+  keyframe and continues with its dependent pictures. A cached keyframe alone cannot supply the
+  intervening references.
 - **Linger, then stop.** When the last consumer detaches the source lingers briefly (so a quick
   re-attach reuses it) and then stops the pull. You don't manage the pull; you manage your consumer.
 
@@ -56,15 +57,15 @@ Worth knowing:
 - `record()` opens its own pull instead of joining the shared source, so it costs a second stream on a
   camera that is already streaming. `recordFragments()` is a shared consumer like everything else.
 
-## T8N00 PoE cameras
+## Cameras behind a T8N00
 
-T8E00 and T8P00 cameras attached to a T8N00 support `live()`, `openReadable()` and
-`snapshotLive()`. `live()` delivers H.265 video and AAC-LC or G.711 A-law audio;
+T8E00, T8P00, T8P10, T8162, T8410 and T8214 cameras attached to a T8N00 support `live()`,
+`openReadable()` and `snapshotLive()`. `live()` delivers H.265 video and AAC-LC or G.711 A-law audio;
 `openReadable()` provides video, and `snapshotLive()` captures a fresh still.
 Recording and talkback are not implemented for this route.
 
 `cam.views?.()` reports the optical view identifiers supported by this route: `[0, 1]`
-for the dual-lens T8E00 S4 and `[0]` for the T8P00 E40. On the S4, view `0` is fixed
+for the dual-lens T8E00 S4 and `[0]` for every other camera. On the S4, view `0` is fixed
 and view `1` is movable. Omitting `view` selects `0`.
 
 ```ts
@@ -171,8 +172,8 @@ first announcements of a session can move from the header's answer to the parame
 having reconfigured; a caller that rebuilds on a difference rebuilds once there.
 
 The announcement is per consumer, against what **that** consumer was last given. A consumer joining
-mid-session is primed with a cached keyframe it did not witness arriving, and one that crosses its queue
-bound resynchronises onto a later IDR having skipped the frame the change arrived on — so both are told,
+mid-session starts at its next live keyframe, and one that crosses its queue bound resynchronises onto
+a later IDR having skipped the frame the change arrived on — so both are told,
 even though the shared source saw the change once.
 
 A change arriving on a keyframe carrying fresh parameter sets is what every run but one showed, and that
@@ -364,12 +365,10 @@ const shot = await cam.snapshotLive?.(); // { jpeg, width, height }
 the stream's frame header, so they cannot disagree with the bytes. (Some cameras reconfigure resolution
 inside one short burst, which is exactly when the header and the encoded still part company.)
 
-If the shared source already has a cached keyframe (a live view or another consumer is warm),
-`snapshotLive` decodes that keyframe directly — **no second pull**. Only if nothing is warm does it
-briefly attach, wait for a clean keyframe, decode, and detach. (The JPEG decode itself uses ffmpeg as
-an optional convenience sink — resolved on `PATH`, or set `ffmpegPath` on the client to name the binary
-you ship; the raw keyframe bytes are always available dependency-free via `openReadable` / the event
-stream.)
+`snapshotLive` reuses a warm pull without opening a second session. It waits for live keyframes,
+collects its decode burst, and detaches before decoding. The JPEG decode uses ffmpeg as an optional
+convenience sink, resolved on `PATH` or configured with `ffmpegPath`. Raw frames remain available
+through `openReadable` and the event stream.
 
 ## Recordings stored on a HomeBase 2
 
@@ -395,8 +394,10 @@ eufy.on("push", async (ev) => {
 
 The download is confirmed on recordings that had finished. How the station answers for a recording it is
 still writing is not established, so issue the download once the camera's configured clip length has
-elapsed since the push. Downloads queue one at a time per station, and the transfer runs faster than real
-time: a 12.8 s recording took about 6 s.
+elapsed since the push. A recording is named either as the push carries it (`yyyyMMddHHmmss`) or as a row of
+the station's own recording archive names it, with the codec prefixed (`h265_yyyyMMddHHmmss`); both reach the
+same file. Downloads queue one at a time per station, and the transfer runs faster than real time: a 12.8 s
+recording took about 6 s.
 
 The result is elementary streams, not a container: `video` is Annex-B H.264 and `audio` (when present) is
 AAC-LC in ADTS framing. `fps` and `durationMs` come from the camera's own frame stamps, and `missingFrames`

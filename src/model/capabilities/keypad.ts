@@ -1,14 +1,13 @@
+import { isChargingState } from "./battery.js";
 import { propertiesOf, type Members, type Surface } from "./members.js";
 import type { CapabilityModule } from "./types.js";
 
 /**
- * Every `keypad` feature, declared once. Only `rssi` is a verified read.
+ * Every `keypad` feature, declared once. `rssi` is a verified read and `charging` follows the app's own
+ * decode of the keypad's charger state.
  *
- * The battery pair is `unexposed`: both ids are placeholders, and the keypad's real battery state is
- * reported under model-specific params (`keypadBatteryCapState` / `keypadBatteryChargerState`, seen
- * live) whose low/charging semantics are not confirmed. They stay in the schema so a diagnosis can
- * reach them through `getProperty`, with no typed getter asserting a meaning this SDK cannot back.
- * A live probe of the fleet's T8960 confirms neither is reported at all today.
+ * `batteryLow` is `unexposed`: the app maps its param to the same low-battery field the entry and motion
+ * sensors feed, but its value decode is absent from the app's parser, so the polarity is not evidenced.
  *
  * Exported but NOT published: each entry states its wire id and the evidence it was confirmed on,
  * which the reference site does not carry.
@@ -16,38 +15,38 @@ import type { CapabilityModule } from "./types.js";
  */
 export const KEYPAD_MEMBERS = {
   /**
-   * `unexposed`, so it reaches a diagnosis through `getProperty` but gets no typed getter. 1103 is a
-   * placeholder AND a likely collision — the app's own param table names 1103 GET_CAMERA_INFO — so a
-   * getter here would be asserting a meaning nothing backs. The keypad's real battery state arrives
-   * under `keypadBatteryCapState`, whose low/charging semantics are not confirmed.
+   * `APP_CMD_KEYPAD_BATTERY_CAP_STATE` (1653). The app's sensor parser maps it to `sensor_is_low_power`,
+   * the field `APP_CMD_ENTRY_SENSOR_BAT_STATE` and `APP_CMD_MOTION_SENSOR_BAT_STATE` decode as a boolean,
+   * yet gives 1653 itself no decode case. `unexposed` until a device confirms which value means low; in
+   * the schema for `getProperty`, absent from the typed surface.
    */
   batteryLow: {
-    param: 1103,
+    param: 1653,
     type: "bool",
     kind: "boolean",
-    provenance: "guessed",
+    provenance: "apk",
     unexposed: true,
     description:
-      "Keypad low-battery flag. UNVERIFIED: placeholder id pending verification — and the app's own " +
-      "param table names 1103 GET_CAMERA_INFO, so the id is very likely wrong here.",
+      "Keypad low-battery flag (APP_CMD_KEYPAD_BATTERY_CAP_STATE, 1653). UNVERIFIED polarity: the app " +
+      "names it its low-battery field but does not decode its value.",
   },
   /**
-   * The charging half of the battery pair, `unexposed` for the same reason as `batteryLow`: 1102 is a
-   * placeholder id, and the state the keypad actually reports (`keypadBatteryChargerState`) has no
-   * confirmed value space. In the schema for `getProperty`, absent from the typed surface.
+   * `APP_CMD_KEYPAD_BATTERY_CHARGER_STATE` (1655), decoded the way the app's sensor parser decodes it:
+   * `charging = value ∉ {0,2}` ({@link isChargingState}).
    */
   charging: {
-    param: 1102,
+    param: 1655,
     type: "bool",
     kind: "boolean",
-    provenance: "guessed",
-    unexposed: true,
-    description: "Keypad charging flag. UNVERIFIED: placeholder id pending verification.",
+    provenance: "apk",
+    coerce: isChargingState,
+    description:
+      "Keypad charging — derived from APP_CMD_KEYPAD_BATTERY_CHARGER_STATE (1655) as `value ∉ {0,2}`, " +
+      "matching the app's own decode.",
   },
   /**
-   * The keypad's link quality in dBm — the one verified read in this table, on the same param 1141 the
-   * other sub-1G sensors report signal strength on. Reported as the device measures it: raw dBm, never
-   * normalised to a bar count.
+   * The keypad's link quality in dBm, on the same param 1141 the other sub-1G sensors report signal
+   * strength on. Reported as the device measures it: raw dBm, never normalised to a bar count.
    */
   rssi: {
     param: 1141,
@@ -62,7 +61,7 @@ export const KEYPAD_MEMBERS = {
 /** Bound keypad reads — the object returned by `dev.keypad()`. Read-only. */
 export type KeypadActions = Surface<typeof KEYPAD_MEMBERS>;
 
-/** `keypad` — security keypad. Battery low/charging and signal. Param ids here are placeholders apart from RSSI. */
+/** `keypad` — security keypad. Charging, battery-low and signal. */
 export const KEYPAD: CapabilityModule = {
   capability: "keypad",
   description: "Security keypad battery and signal state.",

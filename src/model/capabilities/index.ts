@@ -813,7 +813,7 @@ export interface DeviceActionMap {
   smoke: SmokeActions;
   /** CO-detector reads (read-only): `coDetected`, `lastSeen`. */
   co: CoActions;
-  /** Security-keypad reads (read-only): `rssi`. */
+  /** Security-keypad reads (read-only): `charging`, `rssi`. */
   keypad: KeypadActions;
   /** RTSP publish for a NAS/NVR: `publish`/`withdraw` + `published`, `requireAuth`/`allowAnonymous`, `recordingMode`/`setRecordingMode`. One camera at a time per station. */
   rtsp: RtspActions;

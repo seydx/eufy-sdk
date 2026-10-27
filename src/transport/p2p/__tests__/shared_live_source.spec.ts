@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { H264, H265, unit } from "./live-source-fixtures.js";
 import { SharedLiveSource, type SharedLiveSourceOptions } from "../shared-live-source.js";
 import type { LiveAudioFrame, LiveStreamHandle, LiveVideoFrame } from "../../../core/contracts.js";
 
@@ -57,6 +58,20 @@ describe("SharedLiveSource", () => {
     expect(source.consumerCount).toBe(2);
   });
 
+  it("delivers audio to an audio-only subscriber before the first video keyframe", () => {
+    const { source, last } = mk();
+    try {
+      const consumer = source.attach();
+      const received = vi.fn();
+      consumer.on("audio", received);
+      const sound: LiveAudioFrame = { codec: "aac-lc", data: Buffer.from([1, 2]) };
+      last().audio(sound);
+      expect(received).toHaveBeenCalledExactlyOnceWith(sound);
+    } finally {
+      source.dispose();
+    }
+  });
+
   it("delivers the source-captured arrival time with live media", () => {
     const { source, last } = mk();
     const consumer = source.attach();
@@ -93,32 +108,74 @@ describe("SharedLiveSource", () => {
     expect(last().stopped).toBe(0);
   });
 
-  it("keyframe-primes a late joiner with the cached IDR when it subscribes", async () => {
-    const { source, last } = mk();
-    source.attach();
-    last().video(frame(true)); // caches the keyframe
-    const b = source.attach();
-    expect(b.primed).toBe(true);
-    const got: LiveVideoFrame[] = [];
-    b.on("video", (f) => got.push(f)); // subscribing triggers the staged prime
-    await Promise.resolve(); // let the queued microtask deliver the primed keyframe
-    expect(got).toHaveLength(1);
-    expect(got[0].keyframe).toBe(true);
-  });
+  it.each(["h264", "h265"] as const)(
+    "starts a late %s join at the next live keyframe without skipping references",
+    async (codec) => {
+      const { source, last } = mk();
+      source.attach();
+      const cached = { ...frame(true), codec };
+      last().video(cached);
+      last().video({ ...frame(false, 1), codec });
+      last().video({ ...frame(false, 2), codec });
+      const joined = source.attach();
+      const got: LiveVideoFrame[] = [];
+      joined.on("video", (value) => got.push(value));
+      await Promise.resolve();
+      last().video({ ...frame(false, 3), codec });
+      expect(got).toEqual([]);
+      expect(joined.awaitingKeyframe).toBe(true);
+      const next = { ...frame(true), codec };
+      const dependent = { ...frame(false, 4), codec };
+      last().video(next);
+      last().video(dependent);
+      expect(got).toEqual([next, dependent]);
+      expect(joined.awaitingKeyframe).toBe(false);
+      source.dispose();
+    },
+  );
 
-  it("delivers the prime even when the listener attaches a full tick after attach() (async join)", async () => {
-    const { source, last } = mk();
-    source.attach();
-    last().video(frame(true));
-    const b = source.attach();
-    // Simulate the real async live() gap: several ticks pass before the caller subscribes.
-    await Promise.resolve();
-    await Promise.resolve();
-    const got: LiveVideoFrame[] = [];
-    b.on("video", (f) => got.push(f));
-    await Promise.resolve();
-    expect(got[0]?.keyframe).toBe(true); // the cached IDR was NOT lost to a premature microtask
-  });
+  it.each([
+    { codec: "h264", subscription: "video" },
+    { codec: "h265", subscription: "video" },
+    { codec: "h264", subscription: "media" },
+    { codec: "h265", subscription: "media" },
+  ] as const)(
+    "waits for a subscribed $subscription consumer's live $codec keyframe",
+    async ({ codec, subscription }) => {
+      const { source, last } = mk();
+      const existing = source.attach();
+      const existingFrames: LiveVideoFrame[] = [];
+      existing.on("video", (value) => existingFrames.push(value));
+      const keyframe = { ...frame(true), codec, data: unit(codec === "h264" ? H264.idr : H265.idr) };
+      const dependent = { ...frame(false), codec, data: unit(codec === "h264" ? H264.delta : [0x02, 0x01, 0x11]) };
+      last().video(keyframe);
+      const joined = source.attach();
+      joined.on("audio", () => undefined);
+      last().video({ ...keyframe });
+      const got: LiveVideoFrame[] = [];
+      const configurations: unknown[] = [];
+      joined.on("video-config", (value) => configurations.push(value));
+      if (subscription === "video") joined.on("video", (value) => got.push(value));
+      else
+        joined.onMedia((item) => {
+          if (item.kind === "video") got.push(item.frame);
+        });
+      try {
+        await Promise.resolve();
+        last().video(dependent);
+        expect(got).toEqual([]);
+        const next = { ...keyframe };
+        last().video(next);
+        last().video(dependent);
+        expect(got).toEqual([next, dependent]);
+        expect(configurations).toEqual([{ codec, width: 960, height: 540 }]);
+        expect(existingFrames).toHaveLength(5);
+        expect(existingFrames.slice(-2)).toEqual([next, dependent]);
+      } finally {
+        source.dispose();
+      }
+    },
+  );
 
   it("fans one upstream frame to every consumer", () => {
     const { source, last } = mk();
@@ -394,5 +451,9 @@ describe("SharedLiveSource ring buffer (V5)", () => {
     consumer.on("video", (item) => live.push(item));
     await Promise.resolve();
     expect(live).toHaveLength(0);
+    const next = frame(false, 0x42);
+    last().video(next);
+    expect(live).toEqual([next]);
+    source.dispose();
   });
 });

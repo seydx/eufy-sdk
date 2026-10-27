@@ -130,7 +130,8 @@ function autoSpotlightCommand(on: boolean, ctx: CommandContext, opts: AutoSpotli
  * the shared family classifier. Provisional split, to be confirmed against the decompiled V6 app /
  * a confirmed exchange:
  *  - `"json"`: JSON control-payload (`{commandType:1400,data:{time,type,value}}` under 1700) —
- *    FLOODLIGHT_8425, wall-light cams, indoor pan/tilt (31/35) and CAMERA_4G_S330.
+ *    FLOODLIGHT_8425, wall-light cams (incl. the Wall Light Cam S4, T86C1, deviceType 298, confirmed
+ *    live), indoor pan/tilt (31/35) and CAMERA_4G_S330.
  *  - `"int-string"`: level-1 int+string — indoor/outdoor 1080p/2K siblings, outdoor-PT/solo-E30,
  *    E330 Pro (T8600, deviceType 24, confirmed live), and the Cam2C/Cam2/Cam3 families.
  * NOTE: this is FRAME SHAPE only, not encryption LEVEL. The level (L1 vs L2) is a runtime topology
@@ -167,7 +168,6 @@ const LIGHT_SWITCH_INT_STRING_TYPES: ReadonlySet<number> = new Set<number>([
   DeviceType.INDOOR_OUTDOOR_CAMERA_2K,
   DeviceType.INDOOR_OUTDOOR_CAMERA_1080P,
   DeviceType.OUTDOOR_PT_CAMERA,
-  DeviceType.SOLO_CAMERA_E30,
   DeviceType.CAMERA2C,
   DeviceType.CAMERA2,
   DeviceType.CAMERA2_PRO,
@@ -337,12 +337,14 @@ export const LIGHT: CapabilityModule = {
   description: "Floodlight / spotlight manual switch and brightness.",
   members: LIGHT_MEMBERS,
   properties: propertiesOf(LIGHT_MEMBERS),
-  // `light` = a real SPOTLIGHT, detected only from genuine spotlight params — NOT 1045 (that's the
-  // status LED, on every camera; it belongs to `camera`). Params: floodlight switch 1400, spotlight
-  // brightness/enable 1401/1403, indoor-spot enable/bright 6080/6082. Plus explicit light model names.
+  // Three T8171 units on firmware 1.2.1.6 report 1400/1401/1403 without a spotlight, so those
+  // param ids are not sufficient evidence for that model. The camera status LED (1045) is not light.
+  // Other models keep the existing param and name evidence.
   detection: {
-    evidenceParams: [1400, 1401, 1403, 6080, 6082, 1413],
     modelHints: [/floodlight|wall.?light|spot.?light|search.?light/i],
+    detect: (record) =>
+      record.model !== "T8171" &&
+      [1400, 1401, 1403, 6080, 6082, 1413].some((param) => Object.hasOwn(record.params ?? {}, param)),
     // Reporting a spotlight param is not the same as having a spotlight this SDK can switch: a
     // battery doorbell reports 1400 and has no lamp, and its switch wire is unconfirmed, so every
     // press would come back with the refusal from switchFrame. A known deviceType that is in

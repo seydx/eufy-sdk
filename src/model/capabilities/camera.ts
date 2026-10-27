@@ -3,6 +3,7 @@ import { DeviceType } from "../device-types.js";
 import { isIndoorCamera, isIndoorCamMini, isIndoorPanTiltS350 } from "../device-family.js";
 import { setScalar, setPayload, setJson, isCameraCodec, hasCapability } from "./access.js";
 import { AUDIO_CMD } from "./audio.js";
+import { DOORBELL_CMD } from "./doorbell.js";
 import { cameraPowerTier } from "./battery.js";
 import { accepts, propertiesOf, provided, type Members, type Surface, type MemberDeps } from "./members.js";
 import type { AvailabilityContext, CapabilityModule, CapabilityActions, CommandContext } from "./types.js";
@@ -60,6 +61,8 @@ export const CAMERA_CMD = {
    * (1013). (Some models omit full colour; enum in {@link NightVision}.)
    */
   NIGHT_VISION_TYPE: 1277,
+  /** T8442 infrared night vision on/off: direct L1 int-string, hardware verified (0/1). */
+  IC_NIGHT_VISION_TYPE: 1013,
   /**
    * Push-notification STYLE — how much a detection push carries: text alone, a thumbnail, or text
    * followed by a thumbnail. App `CMD_INDOOR_PUSH_NOTIFY_TYPE`, and the "indoor" is a misnomer: the
@@ -412,6 +415,11 @@ function isT8410HomeBase3(ctx: AvailabilityContext): boolean {
   return ctx.model === "T8410" && ctx.stationSerial?.startsWith("T8030") === true;
 }
 
+/** T8442 has a binary night-vision wire, unlike cameras with the three-mode 1277 control. */
+function isT8442(ctx: AvailabilityContext): boolean {
+  return ctx.model === "T8442";
+}
+
 /** T8410 on HomeBase 3 firmware >= 2.3.1.0 uses the wrapped disable-bit power switch. */
 function usesHomeBasePowerPayload(ctx: CommandContext): boolean {
   if (!isT8410HomeBase3(ctx) || !ctx.firmwareVersion || !/^\d+(?:\.\d+){2,3}$/.test(ctx.firmwareVersion)) return false;
@@ -727,17 +735,24 @@ export const CAMERA_MEMBERS = {
     type: "enum",
     kind: "enum",
     enumValues: { 0: "Off", 1: "Infrared", 2: "Full Color" },
+    enumValuesFor: (ctx) => (isT8442(ctx) ? { 0: "Off", 1: "Infrared" } : undefined),
     provenance: "verified",
     available: isCameraCodec,
+    readAvailable: (ctx) => !isT8442(ctx),
+    readAliases: [{ paramType: 2002, available: isT8442 }],
     description:
-      "Night-vision mode (NIGHT_VISION_TYPE 1277): 0 = off, 1 = infrared (B&W), 2 = full colour. " +
-      "✅ wire verified live (T8425 ch3): 1350 SET_PAYLOAD, mChannel 0, {channel:N, night_sion:mode}. " +
-      "Enum labels are best-guess. Some models omit full colour.",
+      "Night-vision mode: 0 = off, 1 = infrared (B&W), 2 = full colour where supported. " +
+      "T8425 uses NIGHT_VISION_TYPE 1277 (1350 SET_PAYLOAD, night_sion); T8442 reports 2002 " +
+      "and writes direct IC_NIGHT_VISION_TYPE 1013 (int-string, 0/1). Both wires verified live.",
     write: (v, ctx) => {
       const nv = coerceEnumValue(NightVision, v);
-      return nv == null
-        ? undefined
-        : setPayload(CAMERA_CMD.NIGHT_VISION_TYPE, { channel: ctx.channel, night_sion: nv }, ctx, 0, 0, "auto");
+      if (nv == null) return undefined;
+      if (isT8442(ctx)) {
+        if (nv === NightVision.FullColor)
+          throw new Error("nightVision: Full Color is not supported on T8442 (only Off/Infrared)");
+        return setScalar(CAMERA_CMD.IC_NIGHT_VISION_TYPE, nv, ctx, "int-string");
+      }
+      return setPayload(CAMERA_CMD.NIGHT_VISION_TYPE, { channel: ctx.channel, night_sion: nv }, ctx, 0, 0, "auto");
     },
   },
   /**
@@ -752,6 +767,8 @@ export const CAMERA_MEMBERS = {
    *
    * `transaction` is part of the frame that was captured, so it is sent. The recording sibling's own
    * confirmed frame carries no such field; neither is inferred from the other.
+   *
+   * Not offered where the device reports the doorbell's own live-view quality (1705).
    */
   streamingQuality: {
     param: 1020,
@@ -759,7 +776,8 @@ export const CAMERA_MEMBERS = {
     kind: "enum",
     enumValues: STREAMING_QUALITY_TIERS,
     provenance: "verified",
-    available: isCameraCodec,
+    available: (ctx: AvailabilityContext) =>
+      isCameraCodec(ctx) && !(ctx.paramIds?.has(DOORBELL_CMD.VIDEO_QUALITY) ?? false),
     args: [{ name: "quality", kind: "enum", description: "A tier, or the name it maps to. 0 is Auto." }],
     ...accepts<StreamingQualityName>(),
     description:
