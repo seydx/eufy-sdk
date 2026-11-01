@@ -20,6 +20,7 @@ import { isIP } from "node:net";
 import {
   constants,
   createCipheriv,
+  createECDH,
   createDecipheriv,
   generateKeyPairSync,
   privateDecrypt,
@@ -71,6 +72,7 @@ import { noopLogger, type Logger } from "../../core/logger.js";
 import { abortable } from "../abortable.js";
 import { LEVEL2_SETTLE_MS } from "./level2-settle.js";
 import { CMD_DATABASE, CMD_DATABASE_IMAGE, DB_QUERY, DB_TABLE_TIMEOUT_MS, fullTableQuery } from "./database-wire.js";
+import { StationUnreachableError } from "../../core/contracts.js";
 
 const LOCAL_LOOKUP_PORT = 32108;
 const HEARTBEAT_MS = 5_000;
@@ -549,6 +551,13 @@ export class P2PSession extends EventEmitter {
   private level2Seq = 0;
   private rsaPrivateKey?: KeyObject;
   private rsaModulusHex?: string;
+  /** The P-256 pair an attached camera's media start offers; see {@link mediaEccPrivateKey}. */
+  private mediaEcc?: { privateKey: Buffer; point: string };
+  /**
+   * Per attached channel, the media-key type its latest start offered on this connection, or that last answered,
+   * and whether a keyframe has answered it. See {@link attachedStartKey} and {@link settleAttachedKey}.
+   */
+  private readonly attachedStartKeys = new Map<number, { kind: "ecc" | "rsa"; answered: boolean }>();
   /**
    * Whether a level-2 key negotiation kicked off by a GATEWAYINFO reply is in flight. Cleared when it
    * settles, so a later reply — the answer to {@link repromptLevel2Key} — negotiates again.
@@ -890,13 +899,22 @@ export class P2PSession extends EventEmitter {
     );
   }
 
-  /** Open the socket and start the lookup → hole-punch handshake. */
+  /**
+   * Open the socket and start the lookup → hole-punch handshake.
+   *
+   * A socket closed or failing while binding never invokes its bind callback, so the bind wait also
+   * settles on the socket's `close` and `error`. On `close`, a connect whose session was closed meanwhile
+   * returns without starting the handshake, so it never sends a lookup or arms a timer on a closed
+   * session. On `error`, connect closes the session and rejects with {@link StationUnreachableError}
+   * carrying the bind error as its `cause`.
+   */
   async connect(): Promise<void> {
     if (this.connecting || this.connected) return;
     this.connecting = true;
     this.closed = false;
     this.connectionGeneration += 1;
     this.ackedRounds = undefined;
+    this.attachedStartKeys.clear();
     this.resetInboundSequencing();
     if (!this.level2KeyServes("set-payload")) {
       this.level2Pending = this.cfg.resolveCipherKey !== undefined;
@@ -911,8 +929,12 @@ export class P2PSession extends EventEmitter {
     socket.on("message", (msg, rinfo) => this.onMessage(msg, rinfo, socket));
     socket.on("error", (e) => this.emit("error", e));
 
-    await new Promise<void>((resolve) => {
+    const generation = this.connectionGeneration;
+    await new Promise<void>((resolve, reject) => {
+      socket.once("close", resolve);
+      socket.once("error", reject);
       socket.bind(() => {
+        socket.off("error", reject);
         try {
           socket.setBroadcast(true);
         } catch {
@@ -921,7 +943,11 @@ export class P2PSession extends EventEmitter {
         this.requestReceiveBuffer(socket);
         resolve();
       });
+    }).catch(async (error: unknown) => {
+      await this.close();
+      throw new StationUnreachableError(this.cfg.stationSn, 0, { cause: error });
     });
+    if (generation !== this.connectionGeneration) return;
 
     void P2PSession.detectLocalIp().then((host) => {
       if (host && !this.closed) this.selfHost = host;
@@ -930,7 +956,6 @@ export class P2PSession extends EventEmitter {
     const { dskKey, cloudAddresses } = this.cfg;
     this.cloudLookup = dskKey && cloudAddresses?.length ? { key: dskKey, addresses: cloudAddresses } : undefined;
     if (this.cloudLookup && cloudAddresses) {
-      const generation = this.connectionGeneration;
       void resolveLookupServers(cloudAddresses).then((addresses) => {
         if (this.cloudLookup && !this.closed && generation === this.connectionGeneration)
           this.cloudLookup.addresses = addresses;
@@ -1316,13 +1341,15 @@ export class P2PSession extends EventEmitter {
   ): void {
     if (homeBaseAttached) {
       this.tracedDatagramGaps = 0;
+      const key = this.connectAddress && this.level2Key ? this.attachedStartKey(channel) : undefined;
       this.trace({
         phase: "media-command",
         topology: "attached",
         action: "start",
         level2: !!this.level2Key,
+        key,
       });
-      this.sendMediaPayloadLevel2(CMD_START_REALTIME_MEDIA, channel, accountId, {});
+      this.sendMediaPayloadLevel2(CMD_START_REALTIME_MEDIA, channel, accountId, {}, key);
       return;
     }
     const want = this.level2Key ? "l2" : this.sendsInTheClear() ? "clear" : "l1";
@@ -1849,12 +1876,17 @@ export class P2PSession extends EventEmitter {
    * Send a CMD_SET_PAYLOAD(1350) wrapping `{account_id, cmd:<subCmd>, mChannel, mValue3:<subCmd>,
    * payload}`, encrypted level-2 (AES-256-GCM, signCode 8) — the app's media-control path. The
    * camera is selected by `mChannel` (= the device's `device_channel`) AND the frame-header channel.
+   * A start (HomeBase-controlled camera path, the V6 app's media-start envelope) also carries an
+   * `accountId` inside its payload and the media key `key` offers (see {@link attachedStartKey}). A start
+   * offering the P-256 point labels itself `ClientOS: "IOS"`, as every simple attached start in the app
+   * captures that carry that key form does; the RSA start keeps `"Android"`.
    */
   private sendMediaPayloadLevel2(
     subCmd: number,
     channel: number,
     accountId: string,
     payload: Record<string, unknown>,
+    key?: "ecc" | "rsa",
   ): void {
     if (!this.connectAddress || !this.level2Key) {
       this.trace({
@@ -1864,16 +1896,13 @@ export class P2PSession extends EventEmitter {
       return;
     }
     const isStart = subCmd === CMD_START_REALTIME_MEDIA;
-    // HomeBase-controlled camera path (the V6 app's media-start envelope): mChannel = device_channel,
-    // an extra accountId inside payload, an RSA public modulus for the media-key handshake, and the
-    // camera is ALSO selected by the FRAME-HEADER channel below.
     const innerPayload = isStart
       ? {
-          ClientOS: "Android",
+          ClientOS: key === "ecc" ? "IOS" : "Android",
           accountId,
           camera_type: 0,
           entrytype: 0,
-          key: this.rsaModulus(),
+          key: key === "ecc" ? this.mediaEccPair().point : this.rsaModulus(),
           streamtype: 2,
           ...payload,
         }
@@ -1947,6 +1976,70 @@ export class P2PSession extends EventEmitter {
     } catch {
       return undefined;
     }
+  }
+
+  /**
+   * The media-key type the next attached start sent on `channel` offers, recorded as offered: ECC, the current
+   * app's form, for the first start this connection sends there; RSA for every start after one that no keyframe
+   * answered before it was re-issued; and, once a keyframe has answered, the type that opened it, until
+   * {@link settleAttachedKey} records another. Only an opened keyframe answers: frames no key opens, and deltas,
+   * do not. A re-issue is a full restart on an attached camera, so a camera that cannot read the point is asked
+   * with RSA, the start every station answers, and is not asked with the point again while that goes unanswered.
+   * A stream decoding with the session's pair reads either answer. A station without {@link mediaEccPrivateKey}
+   * is offered RSA only. A start that cannot be sent offers nothing and records nothing.
+   */
+  private attachedStartKey(channel: number): "ecc" | "rsa" {
+    if (!this.mediaEccPrivateKey) return "rsa";
+    const last = this.attachedStartKeys.get(channel);
+    if (last?.answered) return last.kind;
+    const kind = last ? "rsa" : "ecc";
+    this.attachedStartKeys.set(channel, { kind, answered: false });
+    return kind;
+  }
+
+  /**
+   * Record how a keyframe of `channel` was opened, which answers the starts there. A keyframe opened under a
+   * key type is an answer of that type, whichever type the latest start offered: a station can serve the
+   * P-256 start after the RSA re-issue went out. A plaintext keyframe
+   * answering an unanswered P-256 offer is a camera that did not use the point, and the next start there offers
+   * RSA; once a P-256 answer has been opened it changes nothing, and answering RSA, it settles RSA. Answers
+   * whether a new start is needed. A channel no attached start has offered a key on is left as it is.
+   */
+  settleAttachedKey(channel: number, opened: "ecc" | "rsa" | "plain"): boolean {
+    const last = this.attachedStartKeys.get(channel);
+    if (!last) return false;
+    if (opened === "plain" && last.kind === "ecc") return !last.answered;
+    this.attachedStartKeys.set(channel, { kind: opened === "ecc" ? "ecc" : "rsa", answered: true });
+    return false;
+  }
+
+  /**
+   * The 32-byte P-256 private scalar paired with the point an attached camera's media start offers as `key`.
+   * A camera answering that start wraps each keyframe's AES-256-GCM media key in an ECIES envelope for this
+   * key ({@link VideoFrameDecoder}). Generated once per session, like the RSA pair.
+   *
+   * `undefined` unless the station is a HomeBase 3 (`T8030`): the app's P-256 start and the device runs
+   * that answered it were both observed on that station only.
+   */
+  get mediaEccPrivateKey(): Buffer | undefined {
+    return this.cfg.stationSn.startsWith("T8030") ? this.mediaEccPair().privateKey : undefined;
+  }
+
+  /**
+   * The session's P-256 pair: the private scalar as 32 bytes, and the public point as 128 hex characters,
+   * `x ‖ y` without the uncompressed-point prefix, the form the current app's attached-camera start carries in
+   * `key`. `ECDH.getPrivateKey()` drops a scalar's leading zero bytes, so the scalar is padded back to 32.
+   */
+  private mediaEccPair(): { privateKey: Buffer; point: string } {
+    if (!this.mediaEcc) {
+      const ecdh = createECDH("prime256v1");
+      ecdh.generateKeys();
+      this.mediaEcc = {
+        privateKey: Buffer.from(ecdh.getPrivateKey("hex").padStart(64, "0"), "hex"),
+        point: ecdh.getPublicKey().subarray(1).toString("hex"),
+      };
+    }
+    return this.mediaEcc;
   }
 
   /**
