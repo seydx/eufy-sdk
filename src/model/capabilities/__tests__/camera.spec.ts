@@ -203,6 +203,26 @@ describe("camera capability module", () => {
       await expect(camera(t8442).acts.setNightVision!(NightVision.FullColor)).rejects.toThrow(message);
     });
 
+    it("reads a 1277 value outside the published options as undefined, getter and announcement alike", () => {
+      const params = { [CAMERA_CMD.NIGHT_VISION_TYPE]: "2" };
+      const read = (value: string) => () => ({ value: Number(value) });
+      const reported = ctx(3, { model: "T8425", paramIds: new Set([CAMERA_CMD.NIGHT_VISION_TYPE]) });
+      expect(bind<CameraActions>("camera", reported, { read: read("6") }).acts.nightVision).toBeUndefined();
+      expect(bind<CameraActions>("camera", reported, { read: read("2") }).acts.nightVision).toBe(NightVision.FullColor);
+
+      const dev = Device.fromRecord("TEST-SN", { model: "T8425", params });
+      expect(dev.announcements(dev.applyParams({ [CAMERA_CMD.NIGHT_VISION_TYPE]: "6" }))).toEqual([
+        { property: "nightVision" },
+      ]);
+    });
+
+    it("checks a number member published as an enum against its options too", () => {
+      const reported = ctx(0, { paramIds: new Set([1020]) });
+      const read = (value: number) => bind<CameraActions>("camera", reported, { read: () => ({ value }) }).acts;
+      expect(read(5).streamingQuality).toBeUndefined();
+      expect(read(3).streamingQuality).toBe(3);
+    });
+
     it("keeps the 1277 property and 1350 payload for T8425", () => {
       const older = ctx(3, { model: "T8425", paramIds: new Set([CAMERA_CMD.NIGHT_VISION_TYPE]) });
       const dev = Device.fromRecord("TEST-SN", { model: "T8425", params: { 1277: "2" } });
@@ -774,7 +794,7 @@ describe("camera capability module", () => {
       expect("downloadRecording" in camera(ctx(), media).acts).toBe(false);
     });
 
-    it("a lock-codec device carrying camera is offered live view and nothing else", () => {
+    it("a lock-codec device other than the T8530 is offered live view alone; the T8530 adds openReadable", () => {
       const media: MediaProvider = {
         snapshotStored: async () => Buffer.alloc(0),
         snapshotLive: async () => ({ jpeg: Buffer.alloc(0), width: 1, height: 1 }),
@@ -793,6 +813,10 @@ describe("camera capability module", () => {
       const offered = Object.keys(lock).filter((k) => typeof lock[k] === "function");
       expect(offered).toEqual(["live"]);
       expect(camera(ctx(0, { codec: "camera", ...evidence }), media).acts.setWatermark).toBeTypeOf("function");
+      const videoLock = camera(ctx(0, { codec: "lock", deviceType: DeviceType.LOCK_8530, ...evidence }), media)
+        .acts as Record<string, unknown>;
+      const videoLockOffered = Object.keys(videoLock).filter((k) => typeof videoLock[k] === "function");
+      expect(videoLockOffered.sort()).toEqual(["live", "openReadable"]);
     });
 
     it("a stored-recording download passes the pushed recording name and cipher id through unchanged", async () => {

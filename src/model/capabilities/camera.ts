@@ -1,6 +1,6 @@
 import { asBool, coerceEnumValue } from "../../core/util.js";
 import { DeviceType } from "../device-types.js";
-import { isIndoorCamera, isIndoorCamMini, isIndoorPanTiltS350 } from "../device-family.js";
+import { isIndoorCamera, isIndoorCamMini, isIndoorPanTiltS350, isVideoSmartLock } from "../device-family.js";
 import { setScalar, setPayload, setJson, isCameraCodec, hasCapability } from "./access.js";
 import { AUDIO_CMD } from "./audio.js";
 import { DOORBELL_CMD } from "./doorbell.js";
@@ -729,6 +729,10 @@ export const CAMERA_MEMBERS = {
    * sensor omits it, and the wire accepts the value regardless — the device's own reported set is the
    * only statement of which of the three it has. `coerceEnumValue` rejects a value outside
    * {@link NightVision} rather than coercing it. The payload key on the wire is `night_sion`.
+   *
+   * 1277 carries more than these three on some models: the V6 app's per-model mappings put modes on
+   * 3, 5, 6 and 8 as well, and which model takes which mapping is not in the app bundle. A reported value
+   * outside the published options reads as `undefined` rather than as an unnamed number.
    */
   nightVision: {
     param: CAMERA_CMD.NIGHT_VISION_TYPE,
@@ -955,10 +959,11 @@ export const CAMERA_MEMBERS = {
       }),
     "Record N seconds → an mp4/h264 buffer.",
   ),
+  /** The T8530 serves its live feed as a Readable too; its other media pulls stay withheld. */
   openReadable: provided(
     "media",
     (m, { ctx, read }) =>
-      isCameraCodec(ctx) &&
+      (isCameraCodec(ctx) || isVideoSmartLock(ctx)) &&
       m.openReadable &&
       (async (opts?: Parameters<NonNullable<MediaProvider["openReadable"]>>[0]) => {
         refuseWhenDisabled(ctx, read);
