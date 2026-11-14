@@ -335,8 +335,8 @@ export const LIGHT: CapabilityModule = {
       !NO_SPOTLIGHT_MODELS.has(record.model ?? "") &&
       [1400, 1401, 1403, 6080, 6082, 1413].some((param) => Object.hasOwn(record.params ?? {}, param)),
     // Reporting a spotlight param is not the same as having a spotlight this SDK can switch: a
-    // battery doorbell reports 1400 and has no lamp, and its switch wire is unconfirmed, so every
-    // press would come back with the refusal from switchFrame. A known deviceType that is in
+    // battery doorbell reports 1400 and has no lamp, and its switch wire is unconfirmed, so it
+    // would get a light with readings but no switch. A known deviceType that is in
     // neither wire table therefore gets no capability at all, rather than a control that cannot
     // work. A record without a deviceType says nothing either way and is left as it was.
     requires: (rec) =>
