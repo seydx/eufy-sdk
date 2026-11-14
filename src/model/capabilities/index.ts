@@ -11,11 +11,12 @@ import {
   bindMembers,
   hasRequiredCapabilities,
   installs,
+  kindRoutable,
   memberWrite,
   propertiesOf,
   type MemberDeps,
 } from "./members.js";
-import { camelCase } from "./access.js";
+import { camelCase, describeDevice } from "./access.js";
 import { describeBound, type CapabilityDescriptor } from "./manifest.js";
 import type {
   CapabilityModule,
@@ -37,7 +38,6 @@ import { MOTION } from "./motion.js";
 import { PERSON_DETECTION } from "./person-detection.js";
 import { BATTERY } from "./battery.js";
 export { RtspRecordingMode, type RtspRecordingModeValue, type RtspAuthScheme } from "./rtsp.js";
-export { EntryAlarmTone, type EntryAlarmToneValue } from "./contact.js";
 export { SirenVolume, type SirenVolumeValue, SirenAlarmDuration, type SirenAlarmDurationValue } from "./siren.js";
 /**
  * Ask what a bound capability can be told to change but can never report back, and what it reports without
@@ -81,6 +81,7 @@ import { CONTACT } from "./contact.js";
 import { LEAK } from "./leak.js";
 import { SMOKE } from "./smoke.js";
 import { CO } from "./co.js";
+import { LINK } from "./link.js";
 import { SIREN } from "./siren.js";
 import { LOCK } from "./lock.js";
 import { KEYPAD } from "./keypad.js";
@@ -91,6 +92,16 @@ import { VACUUM_DOCK } from "./vacuum-dock.js";
 import { SUCTION } from "./suction.js";
 import { MOWER } from "./mower.js";
 export { type DpCatalog, EMPTY_DP_CATALOG } from "./dp-catalog.js";
+export type {
+  ThingAction,
+  ThingBundle,
+  ThingCondition,
+  ThingConditions,
+  ThingDescription,
+  ThingEvent,
+  ThingMember,
+  ThingProperty,
+} from "./thing-description.js";
 import { DISPLAY } from "./display.js";
 import { LOCATE } from "./locate.js";
 import { SMART_DROP } from "./smart-drop.js";
@@ -113,6 +124,7 @@ import type { ContactActions } from "./contact.js";
 import type { LeakActions } from "./leak.js";
 import type { SmokeActions } from "./smoke.js";
 import type { CoActions } from "./co.js";
+import type { LinkActions } from "./link.js";
 import type { KeypadActions } from "./keypad.js";
 import type { RtspActions } from "./rtsp.js";
 import type { VacuumCleanActions } from "./vacuum-clean.js";
@@ -155,6 +167,7 @@ const MODULES: CapabilityModule[] = [
   LOCATE,
   SMART_DROP,
   DISPLAY,
+  LINK,
   INFO,
 ];
 
@@ -805,16 +818,18 @@ export interface DeviceActionMap {
   doorbell: DoorbellActions;
   /** Motion/PIR: `setDetection(on)` (sensitivity is read-only until its write wire is captured). */
   motion: MotionActions;
-  /** Entry (door/window) sensor: reads `open`, `lastSeen`, `rssi`, `alarmSoundType`, `alarmVolume`; writes `setAlarmSoundType`, `setAlarmVolume` (present when the sensor reports the alarm params). */
+  /** Entry (door/window) sensor: reads `open`, `alarmSoundType`, `alarmVolume`; writes `setAlarmSoundType`, `setAlarmVolume` (present when the sensor reports the alarm params). */
   contact: ContactActions;
-  /** Water-leak / freeze sensor reads (read-only): `leakDetected`, `lastSeen`. */
+  /** Water and freeze sensor reads (read-only): `leakDetected`, `lowTemperature`, `lowTemperatureThreshold`. */
   leak: LeakActions;
-  /** Smoke-detector reads (read-only): `smokeDetected`, `lastSeen`. */
+  /** Smoke-detector reads (read-only): `smokeDetected`. */
   smoke: SmokeActions;
-  /** CO-detector reads (read-only): `coDetected`, `lastSeen`. */
+  /** CO-detector reads (read-only): `coDetected`. */
   co: CoActions;
-  /** Security-keypad reads (read-only): `charging`, `rssi`. */
+  /** Security-keypad reads (read-only): `charging`. */
   keypad: KeypadActions;
+  /** Check-in and signal reads (read-only): `lastSeen`, `rssi`, each where the device reports it. */
+  link: LinkActions;
   /** RTSP publish for a NAS/NVR: `publish`/`withdraw` + `published`, `requireAuth`/`allowAnonymous`, `recordingMode`/`setRecordingMode`. One camera at a time per station. */
   rtsp: RtspActions;
   /** RoboVac core state and controls: `power`, `activity` (WorkStatus), `volume`, `battery`, `cleanType`; `setPower`, `startCleaning`, `returnToDock`, `pauseCleaning`. */
@@ -945,11 +960,15 @@ function memberCommand(
     const aliased = member.aliases?.[action];
     const claims = action === property || member.intentNames?.includes(action) === true;
     if (!claims && aliased === undefined) continue;
-    if (member.unverified) {
-      throw new Error(`${m.capability}: ${name} write wire unverified — confirm it on a device before sending`);
+    if (member.unverified || member.unverifiedFor?.(ctx)) {
+      throw new Error(
+        `${m.capability}: ${name} write wire unverified — confirm it on a device before sending [${describeDevice(ctx)}]`,
+      );
     }
     if (!member.write || !installs(member, ctx)) continue;
-    return memberWrite(name, member, claims ? value : (aliased as boolean | number | string), ctx);
+    const cmd = memberWrite(name, member, claims ? value : (aliased as boolean | number | string), ctx);
+    if (!kindRoutable(cmd.kind, ctx)) continue;
+    return cmd;
   }
   return undefined;
 }
@@ -1050,6 +1069,7 @@ export type {
   SmokeActions,
   CoActions,
   KeypadActions,
+  LinkActions,
   RtspActions,
   VacuumCleanActions,
   SuctionActions,
@@ -1073,6 +1093,7 @@ export { CO_MEMBERS } from "./co.js";
 export { CONTACT_MEMBERS } from "./contact.js";
 export { DOORBELL_MEMBERS } from "./doorbell.js";
 export { KEYPAD_MEMBERS } from "./keypad.js";
+export { LINK_MEMBERS } from "./link.js";
 export { LEAK_MEMBERS } from "./leak.js";
 export { LIGHT_MEMBERS } from "./light.js";
 export { LOCATE_MEMBERS } from "./locate.js";

@@ -14,6 +14,8 @@
  * This file is the integration contract: every other `src/model/*` module imports from here.
  */
 
+import type { ThingDescription } from "./capabilities/thing-description.js";
+
 /**
  * Command-codec families (axis B2). One per genuinely-different wire protocol.
  *
@@ -58,6 +60,8 @@ export type Capability =
   | "siren"
   | "lock"
   | "keypad"
+  // Check-in timestamp and signal strength, on any security device that reports them.
+  | "link"
   | "arming"
   | "storage"
   // Publish a camera's stream over RTSP for a NAS/NVR (the vendor's NAS/RTSP feature).
@@ -381,6 +385,8 @@ export interface CloudRecord {
    * evidence an availability gate on such a param is decided from.
    */
   dpParams?: Record<number, string>;
+  /** The product's thing description, when the cloud returned one for {@link model}. */
+  things?: ThingDescription;
 }
 
 /** The fully-resolved device shape produced by the 3-tier resolver. */
