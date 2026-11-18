@@ -91,6 +91,8 @@ export const P2P_DATA_HEADER_BYTES = 16;
 export interface P2PDataFrameHeader {
   commandId: number;
   bytesToRead: number;
+  /** Byte 10: 8 when the station speaks level 2 over ECC, which decides the 1100 unwrap; 1 otherwise. */
+  version: number;
   channel: number;
   signCode: number;
   type: number;
@@ -125,6 +127,17 @@ export function p2pDidToBuffer(p2pDid: string): Buffer {
   b2.writeUInt32BE(Number.parseInt(a[1], 10), 0); // 4-byte BE number
   const b3 = stringWithLength(a[2], 8); // 8-byte suffix
   return Buffer.concat([b1, b2, b3], 20);
+}
+
+/**
+ * The cloud lookup servers of a station's record, read as the app reads them: `app_conn` is the init string
+ * it hands the P2P connect, `p2p_conn` only a fallback. An empty field counts as absent.
+ */
+export function stationCloudAddresses(
+  raw: { app_conn?: string; p2p_conn?: string } | undefined,
+): Address[] | undefined {
+  const conn = raw?.app_conn || raw?.p2p_conn;
+  return conn ? decodeP2PCloudIPs(conn) : undefined;
 }
 
 /**
@@ -564,6 +577,7 @@ export function parseDataFrameHeader(frame: Buffer): P2PDataFrameHeader {
   return {
     commandId: frame.subarray(4, 6).readUIntLE(0, 2),
     bytesToRead: frame.subarray(6, 10).readUIntLE(0, 4),
+    version: frame.readUInt8(10),
     channel: frame.readUInt8(12),
     signCode: frame.readUInt8(13),
     type: frame.readUInt8(14),

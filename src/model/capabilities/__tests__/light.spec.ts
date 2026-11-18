@@ -51,6 +51,12 @@ describe("light detection", () => {
     expect(detectCapabilities({ deviceType: 46, params: { 1401: "50" } }, "camera")).toContain("light");
   });
 
+  it("a doorbell whose switch wire depends on its HomeBase keeps its light only when attached", () => {
+    const doorbell = { deviceType: 94, model: "T8214", params: { 1400: "0" } };
+    expect(detectCapabilities({ ...doorbell, parentSn: "STATION0001" }, "camera")).toContain("light");
+    expect(detectCapabilities(doorbell, "camera")).not.toContain("light");
+  });
+
   it("a model name alone is not enough when the switch wire is unknown", () => {
     expect(detectCapabilities({ deviceType: 7, deviceName: "Spotlight Cam" } as never, "camera")).not.toContain(
       "light",
@@ -157,6 +163,26 @@ describe("light capability module", () => {
         type: 2,
         value: 0,
       });
+    });
+
+    it.each(["T8214", "T8217"])(
+      "on/off on a HomeBase-attached %s doorbell → set-param pinned to int-string (1400)",
+      (model) => {
+        const e340 = { ...ctx(1), deviceType: undefined, model, homeBaseAttached: true };
+        expect(intent("on", true, e340)).toEqual({
+          kind: "set-param",
+          param: LIGHT_CMD.FLOODLIGHT_SWITCH,
+          value: 1,
+          form: "int-string",
+          channel: 1,
+        });
+        expect(intent("off", false, e340)).toMatchObject({ form: "int-string", value: 0 });
+      },
+    );
+
+    it.each(["T8214", "T8217"])("leaves a standalone %s doorbell without a switch wire", (model) => {
+      const standalone = { ...ctx(), deviceType: undefined, model, homeBaseAttached: false };
+      expect(() => intent("on", true, standalone)).toThrow(/light: isOn write wire unverified/);
     });
 
     it("does not assign a spotlight switch wire to SoloCam E30", () => {
