@@ -50,6 +50,10 @@ import { dpPresetFields, dpLevelFields, type DpPresetSpec } from "../dp-preset.j
 import { dpColorFields } from "./dp-color.js";
 import { buildCleanDpEnvelope } from "./clean-codec.js";
 
+/** The app's `snToPn` fallback for a lock serial: the T8520 range splits on its 7th character. */
+const pnFromSerial = (sn: string): string =>
+  sn.startsWith("T8520") ? ({ "8": "T8510P", "9": "T8520P" }[sn.charAt(6)] ?? "T8520") : sn.slice(0, 5);
+
 /**
  * The ff09 command topic — always the `eufy_security` scope, regardless of the device's own category
  * (garage/standalone lock records aren't necessarily `eufy_security`-categorized, but this is the one
@@ -313,6 +317,16 @@ export class MqttCommandRouter {
   }
 
   /**
+   * The record with `model` set to the product number `ff09` topics name: `device_new_pn`, else the app's
+   * serial-derived fallback, never `device_model` (a C30 reports `T85D0C` and answers only on `T85D0`).
+   */
+  private async ff09DeviceFor(sn: string): Promise<EufyDevice> {
+    const dev = await this.deviceFor(sn);
+    const pn = (dev.raw as { device_new_pn?: unknown } | undefined)?.device_new_pn;
+    return { ...dev, model: typeof pn === "string" && pn ? pn : pnFromSerial(sn) };
+  }
+
+  /**
    * Fallback broker-instance IPs, tried alongside a fresh DNS resolution — the `aiot-mqtt-{region}
    * .anker.com` NLB has been observed (2026-07-16) to answer a single DNS query with only 2 of its
    * targets, and NOT necessarily including the one currently holding a given device's session (e.g.
@@ -485,8 +499,7 @@ export class MqttCommandRouter {
    * unlike a fixed-sleep-then-teardown, where a late reply arrives after the subscription is already gone.
    */
   private async dispatchFf09Actuate(sn: string, cmd: Extract<Command, { kind: "ff09-actuate" }>): Promise<void> {
-    const dev = await this.deviceFor(sn);
-    if (!dev.model) throw new Error(`dispatchFf09Actuate(${sn}): no product model (pn) — required for the topic`);
+    const dev = await this.ff09DeviceFor(sn);
     const trans = buildFf09Trans({
       engage: cmd.engage,
       adminUserId: cmd.adminUserId,
@@ -564,8 +577,7 @@ export class MqttCommandRouter {
    *     as-is rather than adding keyTime correlation this ack doesn't otherwise need.
    */
   private async dispatchFf09Autolock(sn: string, cmd: Extract<Command, { kind: "ff09-autolock" }>): Promise<void> {
-    const dev = await this.deviceFor(sn);
-    if (!dev.model) throw new Error(`dispatchFf09Autolock(${sn}): no product model (pn) — required for the topic`);
+    const dev = await this.ff09DeviceFor(sn);
 
     const { mqtt, instanceIp } = await this.ensureSecurityMqttFor(dev);
     try {
@@ -662,8 +674,7 @@ export class MqttCommandRouter {
    * has not been independently exercised against a real device yet.
    */
   async getAutoLockState(sn: string, cmd: { adminUserId: string; deviceSn: string }): Promise<AutoLockSnapshot> {
-    const dev = await this.deviceFor(sn);
-    if (!dev.model) throw new Error(`getAutoLockState(${sn}): no product model (pn) — required for the topic`);
+    const dev = await this.ff09DeviceFor(sn);
     const { mqtt, instanceIp } = await this.ensureSecurityMqttFor(dev);
     try {
       await mqtt.subscribeDevice(dev);
